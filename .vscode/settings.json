@@ -1,7 +1,9 @@
 {
-  "python.defaultInterpreterPath": "C:\\Python312\\python.exe",
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.analysis.extraPaths": [
-    "./ml-service"
-  ]
+    "${workspaceFolder}/ml-service",
+    "${workspaceFolder}/.venv/Lib/site-packages"
+  ],
+  "python.analysis.autoSearchPaths": true,
+  "python.analysis.diagnosticMode": "workspace"
 }
-

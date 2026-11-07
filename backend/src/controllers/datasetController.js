@@ -345,37 +345,101 @@ exports.uploadAndImport = async (req, res, next) => {
       complete: async (results) => {
         try {
           const rows = results.data;
-          if (rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'Uploaded file is empty' });
+          if (!rows || rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'Uploaded file is empty or has no records' });
           }
 
+          const detectedCols = Object.keys(rows[0]);
+          let minDate = null;
+          let maxDate = null;
+
+          // Prepare records for database insertion
+          const recordsToInsert = [];
+          for (const row of rows) {
+            // Find date field
+            const dateVal = row['Date'] || row['date'];
+            if (!dateVal) continue;
+
+            const parsedDate = new Date(dateVal);
+            if (isNaN(parsedDate.getTime())) continue;
+
+            if (!minDate || parsedDate < minDate) minDate = parsedDate;
+            if (!maxDate || parsedDate > maxDate) maxDate = parsedDate;
+
+            recordsToInsert.push({
+              date: parsedDate,
+              energyUsageKwh: Number(row['Energy_Usage_kWh'] ?? 0),
+              transportationDistanceKm: Number(row['Transportation_Distance_km'] ?? 0),
+              smartApplianceUsageHours: Number(row['Smart_Appliance_Usage_hours'] ?? 0),
+              renewableEnergyUsagePercent: Number(row['Renewable_Energy_Usage_percent'] ?? 0),
+              temperatureC: Number(row['Temperature_C'] ?? 0),
+              humidityPercent: Number(row['Humidity_percent'] ?? 0),
+              fuelUsageLiters: Number(row['Fuel_Usage_Liters'] ?? 0),
+              wasteGeneratedKg: Number(row['Waste_Generated_kg'] ?? 0),
+              vehicleTypeCar: Number(row['Vehicle_Type_Car'] ?? 0),
+              vehicleTypeElectricVehicle: Number(row['Vehicle_Type_Electric Vehicle'] ?? row['Vehicle_Type_Electric_Vehicle'] ?? 0),
+              vehicleTypeWalking: Number(row['Vehicle_Type_Walking'] ?? 0),
+              buildingTypeResidential: Number(row['Building_Type_Residential'] ?? 0),
+              carbonEmissionKgCO2: Number(row['Carbon_Emission_kgCO2'] ?? 0),
+              isOriginal: false
+            });
+          }
+
+          if (recordsToInsert.length === 0) {
+            return res.status(400).json({
+              success: false,
+              message: 'No valid records could be extracted from dataset. Please ensure required schema and valid dates.'
+            });
+          }
+
+          // Create dataset record
           const uploadedDataset = await prisma.uploadedDataset.create({
             data: {
               filename: originalname,
               originalName: originalname,
-              rowCount: rows.length,
-              columnCount: Object.keys(rows[0]).length,
+              rowCount: recordsToInsert.length,
+              columnCount: detectedCols.length,
+              dateRangeStart: minDate,
+              dateRangeEnd: maxDate,
               status: 'COMPLETED',
-              uploadedBy: req.user ? req.user.name : 'Authorized User'
+              uploadedBy: req.user ? req.user.name : 'Authorized Officer'
             }
           });
 
-          // Log import
+          // Associate datasetId and batch insert in chunks of 500
+          const chunkSize = 500;
+          for (let i = 0; i < recordsToInsert.length; i += chunkSize) {
+            const chunk = recordsToInsert.slice(i, i + chunkSize).map(r => ({
+              ...r,
+              datasetId: uploadedDataset.id
+            }));
+            await prisma.datasetRecord.createMany({
+              data: chunk
+            });
+          }
+
+          // Create audit import log
           await prisma.importLog.create({
             data: {
               filename: originalname,
               totalRows: rows.length,
-              successfulRows: rows.length,
-              failedRows: 0,
-              importedBy: req.user ? req.user.name : 'Authorized User'
+              successfulRows: recordsToInsert.length,
+              failedRows: rows.length - recordsToInsert.length,
+              importedBy: req.user ? req.user.name : 'Authorized Officer'
             }
           });
 
           return res.status(200).json({
             success: true,
-            message: `Successfully processed ${rows.length} records`,
+            message: `Successfully validated and ingested ${recordsToInsert.length} records into PostgreSQL`,
             datasetId: uploadedDataset.id,
-            rowCount: rows.length
+            rowCount: recordsToInsert.length,
+            columnCount: detectedCols.length,
+            columnsDetected: detectedCols,
+            dateRange: {
+              start: minDate?.toISOString().split('T')[0],
+              end: maxDate?.toISOString().split('T')[0]
+            }
           });
         } catch (err) {
           next(err);

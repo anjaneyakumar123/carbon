@@ -3,6 +3,8 @@ const PDFDocument = require('pdfkit');
 const ExcelJS = require('exceljs');
 const Papa = require('papaparse');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
 
@@ -58,19 +60,30 @@ exports.exportReportPDF = async (req, res, next) => {
   try {
     const { reportType = 'dataset_summary', startDate, endDate } = req.query;
 
-    const totalRecords = await prisma.datasetRecord.count();
-    const agg = await prisma.datasetRecord.aggregate({
-      _sum: { carbonEmissionKgCO2: true },
-      _avg: {
-        carbonEmissionKgCO2: true,
-        energyUsageKwh: true,
-        fuelUsageLiters: true,
-        transportationDistanceKm: true,
-        renewableEnergyUsagePercent: true
-      },
-      _min: { carbonEmissionKgCO2: true, date: true },
-      _max: { carbonEmissionKgCO2: true, date: true }
-    });
+    const [totalRecords, agg, activities, topEmissions] = await Promise.all([
+      prisma.datasetRecord.count(),
+      prisma.datasetRecord.aggregate({
+        _sum: { carbonEmissionKgCO2: true },
+        _avg: {
+          carbonEmissionKgCO2: true,
+          energyUsageKwh: true,
+          fuelUsageLiters: true,
+          transportationDistanceKm: true,
+          renewableEnergyUsagePercent: true
+        },
+        _min: { carbonEmissionKgCO2: true, date: true },
+        _max: { carbonEmissionKgCO2: true, date: true }
+      }),
+      prisma.activityRecord.findMany({
+        take: 8,
+        orderBy: { date: 'desc' },
+        include: { emissionFactor: true, department: true }
+      }),
+      prisma.datasetRecord.findMany({
+        take: 5,
+        orderBy: { carbonEmissionKgCO2: 'desc' }
+      })
+    ]);
 
     // Create A4 Document (595.28 x 841.89 pt) with 45pt margins
     const doc = new PDFDocument({
@@ -91,9 +104,7 @@ exports.exportReportPDF = async (req, res, next) => {
     // 1. TOP HEADER BANNER (ISRO Forest Green)
     // ==========================================
     doc.rect(0, 0, 595.28, 72).fill('#064e3b'); // Forest green
-    
-    // Top Gold Accent Bar
-    doc.rect(0, 0, 595.28, 4).fill('#10b981'); // Emerald accent
+    doc.rect(0, 0, 595.28, 4).fill('#10b981'); // Emerald accent line
 
     doc.fillColor('#ffffff').fontSize(15).font('Helvetica-Bold')
        .text('ISRO PROPULSION COMPLEX (IPRC), MAHENDRAGIRI', 45, 18);
@@ -110,24 +121,16 @@ exports.exportReportPDF = async (req, res, next) => {
     let currentY = 88;
 
     doc.fillColor('#111827').fontSize(14).font('Helvetica-Bold')
-       .text(`Official Environmental Audit Report: ${reportType.replace(/_/g, ' ').toUpperCase()}`, 45, currentY);
+       .text(`Official Environmental Audit: ${reportType.replace(/_/g, ' ').toUpperCase()}`, 45, currentY);
 
     currentY += 18;
     doc.fontSize(8.5).font('Helvetica').fillColor('#6b7280')
-       .text(`Audit Date: ${new Date().toUTCString()}  |  Verification Status: Formal Analytical Clearance  |  Classification: Official`, 45, currentY);
+       .text(`Audit Timestamp: ${new Date().toUTCString()}  |  Methodology: Tier 1 GHG Protocol & ISO 14064  |  Clearance: Formal`, 45, currentY);
 
     currentY += 14;
     doc.moveTo(45, currentY).lineTo(550, currentY).strokeColor('#e5e7eb').lineWidth(1).stroke();
 
     currentY += 12;
-
-    // ==========================================
-    // 3. SECTION 1: EXECUTIVE SUMMARY CARDS
-    // ==========================================
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
-       .text('1. EXECUTIVE SUMMARY & DATASET BASELINE', 45, currentY);
-
-    currentY += 16;
 
     // 4 Summary Metrics KPI Blocks (2x2 Grid)
     const cardWidth = 245;
@@ -169,13 +172,9 @@ exports.exportReportPDF = async (req, res, next) => {
 
     currentY += cardHeight + 12;
 
-    // ==========================================
-    // 4. STANDARDIZATION DISCLOSURE CALLOUT BOX
-    // ==========================================
+    // Standardization Disclosure Callout Box
     const calloutHeight = 44;
-    doc.rect(45, currentY, 505, calloutHeight).fillAndStroke('#fefce8', '#fef08a'); // Amber-tinted warning card
-    
-    // Left decorative amber border
+    doc.rect(45, currentY, 505, calloutHeight).fillAndStroke('#fefce8', '#fef08a');
     doc.rect(45, currentY, 4, calloutHeight).fill('#d97706');
 
     doc.fillColor('#92400e').fontSize(8).font('Helvetica-Bold')
@@ -189,61 +188,107 @@ exports.exportReportPDF = async (req, res, next) => {
 
     currentY += calloutHeight + 14;
 
-    // ==========================================
-    // 5. SECTION 2: KEY STATISTICAL INDICATORS TABLE
-    // ==========================================
-    doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
-       .text('2. KEY STATISTICAL INDICATORS & BASELINE MEANS', 45, currentY);
-
-    currentY += 15;
-
-    // Table Header
     const tableX = 45;
     const tableWidth = 505;
-    const headerHeight = 18;
 
-    doc.rect(tableX, currentY, tableWidth, headerHeight).fill('#065f46');
-    doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
-    doc.text('Indicator / Feature Name', tableX + 10, currentY + 5);
-    doc.text('Statistical Nature', tableX + 220, currentY + 5);
-    doc.text('Observed Value / Standardized Mean', tableX + 360, currentY + 5);
+    // =========================================================================
+    // PROFILE CONDITIONAL SECTIONS
+    // =========================================================================
+    if (reportType === 'operational_activity') {
+      // -----------------------------------------------------------------------
+      // PROFILE: OPERATIONAL ACTIVITY LOG (MODE B)
+      // -----------------------------------------------------------------------
+      doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
+         .text('MODE B OPERATIONAL REAL-WORLD ACTIVITY RECORDINGS', 45, currentY);
 
-    currentY += headerHeight;
+      currentY += 15;
 
-    const tableRows = [
-      ['Carbon Emission Target (Physical)', 'Physical Target (kg CO2)', `${(agg._avg.carbonEmissionKgCO2 || 0).toFixed(3)} kg CO2 (Actual)`],
-      ['Energy Consumption Score', 'Standardized Feature (Z-score)', `${(agg._avg.energyUsageKwh || 0).toFixed(4)} std  (Zero-Mean)`],
-      ['Transportation Distance Score', 'Standardized Feature (Z-score)', `${(agg._avg.transportationDistanceKm || 0).toFixed(4)} std  (Zero-Mean)`],
-      ['Liquid Fuel Combustion Score', 'Standardized Feature (Z-score)', `${(agg._avg.fuelUsageLiters || 0).toFixed(4)} std  (Zero-Mean)`],
-      ['Renewable Energy Proportion Score', 'Standardized Feature (Z-score)', `${(agg._avg.renewableEnergyUsagePercent || 0).toFixed(4)} std  (Zero-Mean)`],
-      ['Solid Waste Generation Score', 'Standardized Feature (Z-score)', '0.0000 std  (Zero-Mean)']
-    ];
+      const actHeaderHeight = 18;
+      doc.rect(tableX, currentY, tableWidth, actHeaderHeight).fill('#065f46');
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(7.5);
+      doc.text('Date', tableX + 8, currentY + 5);
+      doc.text('Activity Description', tableX + 65, currentY + 5);
+      doc.text('Category', tableX + 220, currentY + 5);
+      doc.text('Physical Quantity', tableX + 285, currentY + 5);
+      doc.text('Scope', tableX + 375, currentY + 5);
+      doc.text('Calculated CO2', tableX + 430, currentY + 5);
 
-    const rowHeight = 16;
-    tableRows.forEach((r, idx) => {
-      const bg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
-      doc.rect(tableX, currentY, tableWidth, rowHeight).fillAndStroke(bg, '#f1f5f9');
-      
-      doc.font('Helvetica').fontSize(8).fillColor('#1e293b');
-      doc.text(r[0], tableX + 10, currentY + 4);
-      
-      doc.fontSize(7.5).fillColor('#64748b');
-      doc.text(r[1], tableX + 220, currentY + 4);
+      currentY += actHeaderHeight;
 
-      const valColor = idx === 0 ? '#047857' : '#0f172a';
-      doc.font('Helvetica-Bold').fontSize(8).fillColor(valColor);
-      doc.text(r[2], tableX + 360, currentY + 4);
+      activities.forEach((a, idx) => {
+        const bg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+        doc.rect(tableX, currentY, tableWidth, 16).fillAndStroke(bg, '#f1f5f9');
+        
+        doc.font('Helvetica').fontSize(7.5).fillColor('#1e293b');
+        doc.text(a.date.toISOString().split('T')[0], tableX + 8, currentY + 4);
+        doc.text(a.activityName.substring(0, 32), tableX + 65, currentY + 4);
+        
+        doc.fillColor('#475569');
+        doc.text(a.category, tableX + 220, currentY + 4);
+        doc.text(`${a.quantity} ${a.unit}`, tableX + 285, currentY + 4);
+        doc.text(a.scope.replace('_', ' '), tableX + 375, currentY + 4);
 
-      currentY += rowHeight;
-    });
+        doc.font('Helvetica-Bold').fillColor('#047857');
+        doc.text(`${Number(a.calculatedEmissionKgCO2 || 0).toFixed(2)} kg`, tableX + 430, currentY + 4);
 
-    currentY += 14;
+        currentY += 16;
+      });
+
+      currentY += 12;
+
+    } else {
+      // -----------------------------------------------------------------------
+      // DEFAULT / DATASET SUMMARY / ML EVALUATION: KEY INDICATORS TABLE
+      // -----------------------------------------------------------------------
+      doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
+         .text('KEY STATISTICAL INDICATORS & BASELINE MEANS', 45, currentY);
+
+      currentY += 15;
+
+      const headerHeight = 18;
+      doc.rect(tableX, currentY, tableWidth, headerHeight).fill('#065f46');
+      doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8);
+      doc.text('Indicator / Feature Name', tableX + 10, currentY + 5);
+      doc.text('Statistical Nature', tableX + 220, currentY + 5);
+      doc.text('Observed Value / Standardized Mean', tableX + 360, currentY + 5);
+
+      currentY += headerHeight;
+
+      const tableRows = [
+        ['Carbon Emission Target (Physical)', 'Physical Target (kg CO2)', `${(agg._avg.carbonEmissionKgCO2 || 0).toFixed(3)} kg CO2 (Actual)`],
+        ['Energy Consumption Score', 'Standardized Feature (Z-score)', `${(agg._avg.energyUsageKwh || 0).toFixed(4)} std  (Zero-Mean)`],
+        ['Transportation Travel Score', 'Standardized Feature (Z-score)', `${(agg._avg.transportationDistanceKm || 0).toFixed(4)} std  (Zero-Mean)`],
+        ['Liquid Fuel Combustion Score', 'Standardized Feature (Z-score)', `${(agg._avg.fuelUsageLiters || 0).toFixed(4)} std  (Zero-Mean)`],
+        ['Renewable Energy Proportion Score', 'Standardized Feature (Z-score)', `${(agg._avg.renewableEnergyUsagePercent || 0).toFixed(4)} std  (Zero-Mean)`],
+        ['Solid Waste Generation Score', 'Standardized Feature (Z-score)', '0.0000 std  (Zero-Mean)']
+      ];
+
+      const rowHeight = 16;
+      tableRows.forEach((r, idx) => {
+        const bg = idx % 2 === 0 ? '#ffffff' : '#f8fafc';
+        doc.rect(tableX, currentY, tableWidth, rowHeight).fillAndStroke(bg, '#f1f5f9');
+        
+        doc.font('Helvetica').fontSize(8).fillColor('#1e293b');
+        doc.text(r[0], tableX + 10, currentY + 4);
+        
+        doc.fontSize(7.5).fillColor('#64748b');
+        doc.text(r[1], tableX + 220, currentY + 4);
+
+        const valColor = idx === 0 ? '#047857' : '#0f172a';
+        doc.font('Helvetica-Bold').fontSize(8).fillColor(valColor);
+        doc.text(r[2], tableX + 360, currentY + 4);
+
+        currentY += rowHeight;
+      });
+
+      currentY += 14;
+    }
 
     // ==========================================
-    // 6. SECTION 3: MACHINE LEARNING BENCHMARKS
+    // MACHINE LEARNING BENCHMARK SECTION
     // ==========================================
     doc.fontSize(11).font('Helvetica-Bold').fillColor('#065f46')
-       .text('3. PREDICTIVE MACHINE LEARNING BENCHMARK (RES-IPRC-2025-003)', 45, currentY);
+       .text('PREDICTIVE MACHINE LEARNING BENCHMARKS (RES-IPRC-2025-003)', 45, currentY);
 
     currentY += 14;
 
@@ -252,7 +297,6 @@ exports.exportReportPDF = async (req, res, next) => {
 
     currentY += 12;
 
-    // ML Comparison Mini Table
     const mlTableHeight = 16;
     doc.rect(tableX, currentY, tableWidth, mlTableHeight).fill('#f1f5f9');
     doc.fillColor('#334155').font('Helvetica-Bold').fontSize(7.5);
@@ -288,7 +332,7 @@ exports.exportReportPDF = async (req, res, next) => {
     currentY += 12;
 
     // ==========================================
-    // 7. SECTION 4: SIGN-OFF & AUDIT VERIFICATION
+    // SIGN-OFF & AUDIT VERIFICATION BOX
     // ==========================================
     const signBoxY = currentY;
     doc.rect(45, signBoxY, 505, 46).fillAndStroke('#f8fafc', '#e2e8f0');
@@ -302,7 +346,7 @@ exports.exportReportPDF = async (req, res, next) => {
     doc.text(`Digital Audit Signature: IPRC-SHA256-${Date.now().toString(16).toUpperCase()}-VERIFIED`, 55, signBoxY + 37);
 
     // ==========================================
-    // 8. RUNNING FOOTER
+    // RUNNING FOOTER
     // ==========================================
     doc.moveTo(45, 800).lineTo(550, 800).strokeColor('#e5e7eb').lineWidth(0.5).stroke();
     
@@ -320,18 +364,24 @@ exports.exportReportPDF = async (req, res, next) => {
 
 exports.exportReportExcel = async (req, res, next) => {
   try {
-    const records = await prisma.datasetRecord.findMany({
-      take: 5000,
-      orderBy: { date: 'asc' }
-    });
+    const [records, activities, emissionFactors] = await Promise.all([
+      prisma.datasetRecord.findMany({ take: 3000, orderBy: { date: 'asc' } }),
+      prisma.activityRecord.findMany({
+        orderBy: { date: 'desc' },
+        include: { emissionFactor: true, department: true }
+      }),
+      prisma.emissionFactor.findMany({ orderBy: { category: 'asc' } })
+    ]);
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'IPRC CarbonTrack';
     workbook.created = new Date();
 
-    const sheet = workbook.addWorksheet('Carbon Emission Report');
-
-    sheet.columns = [
+    // -------------------------------------------------------------
+    // SHEET 1: Baseline Dataset Sample Records
+    // -------------------------------------------------------------
+    const sheet1 = workbook.addWorksheet('Dataset Baseline');
+    sheet1.columns = [
       { header: 'Observation Date', key: 'date', width: 16 },
       { header: 'Energy Usage (Std)', key: 'energyUsageKwh', width: 18 },
       { header: 'Transportation Distance (Std)', key: 'transportationDistanceKm', width: 25 },
@@ -345,16 +395,11 @@ exports.exportReportExcel = async (req, res, next) => {
       { header: 'Carbon Emission (kgCO2 Target)', key: 'carbonEmissionKgCO2', width: 25 }
     ];
 
-    // Style header row
-    sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    sheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF065F46' }
-    };
+    sheet1.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet1.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF065F46' } };
 
     records.forEach(r => {
-      sheet.addRow({
+      sheet1.addRow({
         date: r.date.toISOString().split('T')[0],
         energyUsageKwh: r.energyUsageKwh,
         transportationDistanceKm: r.transportationDistanceKm,
@@ -366,6 +411,64 @@ exports.exportReportExcel = async (req, res, next) => {
         vehicleTypeWalking: r.vehicleTypeWalking,
         buildingTypeResidential: r.buildingTypeResidential,
         carbonEmissionKgCO2: r.carbonEmissionKgCO2
+      });
+    });
+
+    // -------------------------------------------------------------
+    // SHEET 2: Mode B Operational Activity Ledger
+    // -------------------------------------------------------------
+    const sheet2 = workbook.addWorksheet('Operational Activities (Mode B)');
+    sheet2.columns = [
+      { header: 'Date', key: 'date', width: 14 },
+      { header: 'Activity Description', key: 'activityName', width: 35 },
+      { header: 'Category', key: 'category', width: 18 },
+      { header: 'Physical Quantity', key: 'quantity', width: 18 },
+      { header: 'Unit', key: 'unit', width: 12 },
+      { header: 'GHG Scope', key: 'scope', width: 15 },
+      { header: 'Calculated Emission (kg CO2)', key: 'emission', width: 26 },
+      { header: 'Department', key: 'dept', width: 25 }
+    ];
+
+    sheet2.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet2.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
+
+    activities.forEach(a => {
+      sheet2.addRow({
+        date: a.date.toISOString().split('T')[0],
+        activityName: a.activityName,
+        category: a.category,
+        quantity: a.quantity,
+        unit: a.unit,
+        scope: a.scope,
+        emission: a.calculatedEmissionKgCO2 || 0,
+        dept: a.department?.name || 'General Facility'
+      });
+    });
+
+    // -------------------------------------------------------------
+    // SHEET 3: Emission Factors Benchmark Registry
+    // -------------------------------------------------------------
+    const sheet3 = workbook.addWorksheet('Emission Factors Registry');
+    sheet3.columns = [
+      { header: 'Activity / Fuel Name', key: 'fuelOrActivityType', width: 35 },
+      { header: 'Category', key: 'category', width: 18 },
+      { header: 'Factor Value', key: 'factor', width: 15 },
+      { header: 'Unit', key: 'unit', width: 20 },
+      { header: 'Authoritative Source', key: 'source', width: 45 },
+      { header: 'Methodology', key: 'methodology', width: 30 }
+    ];
+
+    sheet3.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    sheet3.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } };
+
+    emissionFactors.forEach(f => {
+      sheet3.addRow({
+        fuelOrActivityType: f.fuelOrActivityType,
+        category: f.category,
+        factor: f.factor,
+        unit: f.unit,
+        source: f.source,
+        methodology: f.methodology
       });
     });
 

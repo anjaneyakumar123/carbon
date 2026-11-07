@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Dict, List, Optional
+from contextlib import asynccontextmanager
 
 # Ensure local imports work regardless of execution directory
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,10 +17,25 @@ if CURRENT_DIR not in sys.path:
 
 from train_models import train_and_evaluate, FEATURE_COLS, MODELS_DIR
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Ensure models are trained and metadata is available on server startup."""
+    active_path = os.path.join(MODELS_DIR, 'active_model.joblib')
+    meta = load_metadata()
+    if not os.path.exists(active_path) or not meta:
+        print("Model artifacts not found on startup. Training initial benchmark models...")
+        try:
+            train_and_evaluate()
+            print("Models initialized successfully on startup.")
+        except Exception as e:
+            print(f"Startup model training error: {e}")
+    yield
+
 app = FastAPI(
     title="IPRC CarbonTrack ML Prediction Service",
     description="Machine Learning Service for Carbon Footprint Target Prediction (RES-IPRC-2025-003)",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -65,18 +81,6 @@ def load_metadata():
             print(f"Error reading metadata: {e}")
     return None
 
-@app.on_event("startup")
-def startup_event():
-    """Ensure models are trained and metadata is available on server startup."""
-    active_path = os.path.join(MODELS_DIR, 'active_model.joblib')
-    meta = load_metadata()
-    if not os.path.exists(active_path) or not meta:
-        print("Model artifacts not found on startup. Training initial benchmark models...")
-        try:
-            train_and_evaluate()
-            print("Models initialized successfully on startup.")
-        except Exception as e:
-            print(f"Startup model training error: {e}")
 
 @app.get("/health")
 def health_check():
