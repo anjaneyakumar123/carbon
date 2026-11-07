@@ -1,0 +1,347 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  OFFICER
+  ANALYST
+}
+
+enum ActivityCategory {
+  ENERGY
+  FUEL
+  TRANSPORTATION
+  WASTE
+  WATER
+  MATERIAL
+}
+
+enum ActivityScope {
+  SCOPE_1
+  SCOPE_2
+  SCOPE_3
+  UNASSIGNED
+}
+
+enum CalculationStatus {
+  COMPLETED
+  PENDING
+  MANUAL
+}
+
+enum RecommendationPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RecommendationStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum WasteCategory {
+  HAZARDOUS
+  ORGANIC
+  ELECTRONIC
+  SOLID
+  PROPELLANT_RESIDUE
+  INDUSTRIAL
+}
+
+enum TreatmentMethod {
+  RECYCLED
+  INCINERATED
+  SECURE_LANDFILL
+  STORED
+  EFFLUENT_TREATMENT
+}
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  passwordHash String
+  name         String
+  role         Role        @default(ANALYST)
+  designation  String?     @default("Environmental Officer")
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Department {
+  id                    String                 @id @default(uuid())
+  name                  String                 @unique
+  code                  String                 @unique
+  description           String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  users                 User[]
+  activityRecords       ActivityRecord[]
+  renewableRecords      RenewableEnergyRecord[]
+  waterRecords          WaterRecord[]
+  wasteRecords          WasteRecord[]
+  materialRecords       MaterialRecord[]
+
+  @@map("departments")
+}
+
+model UploadedDataset {
+  id             String          @id @default(uuid())
+  filename       String
+  originalName   String
+  rowCount       Int
+  columnCount    Int
+  dateRangeStart DateTime?
+  dateRangeEnd   DateTime?
+  status         String          @default("COMPLETED")
+  uploadedBy     String          @default("System")
+  createdAt      DateTime        @default(now())
+
+  records        DatasetRecord[]
+
+  @@map("uploaded_datasets")
+}
+
+model DatasetRecord {
+  id                            String           @id @default(uuid())
+  datasetId                     String
+  dataset                       UploadedDataset  @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  date                          DateTime
+  
+  // Standardized numerical input features (Z-scores / scaled)
+  energyUsageKwh                Float
+  transportationDistanceKm      Float
+  smartApplianceUsageHours      Float
+  renewableEnergyUsagePercent   Float
+  temperatureC                  Float
+  humidityPercent               Float
+  fuelUsageLiters               Float
+  wasteGeneratedKg              Float
+
+  // Standardized encoded categorical features
+  vehicleTypeCar                Float
+  vehicleTypeElectricVehicle    Float
+  vehicleTypeWalking            Float
+  buildingTypeResidential       Float
+
+  // Physical target emission in kgCO2 (unstandardized physical value)
+  carbonEmissionKgCO2           Float
+
+  isOriginal                    Boolean          @default(true)
+  createdAt                     DateTime         @default(now())
+
+  @@index([date])
+  @@index([carbonEmissionKgCO2])
+  @@index([datasetId])
+  @@map("dataset_records")
+}
+
+model ActivityRecord {
+  id                      String             @id @default(uuid())
+  date                    DateTime
+  category                ActivityCategory
+  activityName            String
+  quantity                Float
+  unit                    String
+  scope                   ActivityScope      @default(UNASSIGNED)
+  emissionFactorId        String?
+  emissionFactor          EmissionFactor?    @relation(fields: [emissionFactorId], references: [id])
+  calculatedEmissionKgCO2 Float?
+  calculationStatus       CalculationStatus  @default(PENDING)
+  details                 Json?
+  departmentId            String?
+  department              Department?        @relation(fields: [departmentId], references: [id])
+  createdBy               String             @default("User")
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  emissionResults         EmissionResult[]
+
+  @@index([date])
+  @@index([category])
+  @@index([departmentId])
+  @@map("activity_records")
+}
+
+model EmissionFactor {
+  id                 String           @id @default(uuid())
+  category           ActivityCategory
+  fuelOrActivityType String           @unique
+  factor             Float            // e.g. 0.82 kg CO2 / kWh
+  unit               String           // "kg CO2 / kWh" or "kg CO2 / Litre"
+  source             String           // e.g. "CEA Baseline 2023", "IPCC 2019"
+  version            String           @default("2024.1")
+  methodology        String           @default("Tier 1 Activity Analysis")
+  co2eMultiplier     Float            @default(1.0)
+  isActive           Boolean          @default(true)
+  isVerified         Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  activityRecords    ActivityRecord[]
+
+  @@map("emission_factors")
+}
+
+model EmissionResult {
+  id               String          @id @default(uuid())
+  activityRecordId String
+  activityRecord   ActivityRecord  @relation(fields: [activityRecordId], references: [id], onDelete: Cascade)
+  emissionKgCO2    Float
+  emissionKgCO2e   Float
+  factorUsed       Float
+  factorSource     String
+  calculatedAt     DateTime        @default(now())
+  notes            String?
+
+  @@map("emission_results")
+}
+
+model RenewableEnergyRecord {
+  id                     String      @id @default(uuid())
+  date                   DateTime
+  solarGenerationKwh     Float       @default(0.0)
+  windGenerationKwh      Float       @default(0.0)
+  gridImportKwh          Float       @default(0.0)
+  captiveConsumptionKwh  Float       @default(0.0)
+  totalRenewablePercent  Float       @default(0.0)
+  departmentId           String?
+  department             Department? @relation(fields: [departmentId], references: [id])
+  createdAt              DateTime    @default(now())
+
+  @@index([date])
+  @@map("renewable_energy_records")
+}
+
+model WaterRecord {
+  id                    String      @id @default(uuid())
+  date                  DateTime
+  waterConsumedKl       Float
+  waterReusedKl         Float       @default(0.0)
+  wastewaterGeneratedKl Float       @default(0.0)
+  treatmentPlantId      String?
+  departmentId          String?
+  department            Department? @relation(fields: [departmentId], references: [id])
+  createdAt             DateTime    @default(now())
+
+  @@index([date])
+  @@map("water_records")
+}
+
+model WasteRecord {
+  id                 String          @id @default(uuid())
+  date               DateTime
+  wasteCategory      WasteCategory
+  quantityKg         Float
+  treatmentMethod    TreatmentMethod
+  recycledQuantityKg Float           @default(0.0)
+  departmentId       String?
+  department         Department?     @relation(fields: [departmentId], references: [id])
+  createdAt          DateTime        @default(now())
+
+  @@index([date])
+  @@map("waste_records")
+}
+
+model MaterialRecord {
+  id           String      @id @default(uuid())
+  date         DateTime
+  materialName String
+  category     String
+  quantity     Float
+  unit         String
+  supplier     String?
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@index([date])
+  @@map("material_records")
+}
+
+model Recommendation {
+  id              String                 @id @default(uuid())
+  title           String
+  description     String
+  priority        RecommendationPriority @default(MEDIUM)
+  category        String
+  supportingData  String
+  relatedFeature  String
+  suggestedAction String
+  status          RecommendationStatus   @default(OPEN)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+
+  @@map("recommendations")
+}
+
+model PredictionHistory {
+  id                     String   @id @default(uuid())
+  inputFeatures          Json
+  predictedEmissionKgCO2 Float
+  modelUsed              String
+  modelMetrics           Json?
+  createdBy              String?  @default("Analyst")
+  createdAt              DateTime @default(now())
+
+  @@map("prediction_history")
+}
+
+model ModelMetadata {
+  id                 String   @id @default(uuid())
+  modelName          String
+  algorithm          String
+  r2Score            Float
+  mae                Float
+  mse                Float
+  rmse               Float
+  trainSamples       Int
+  testSamples        Int
+  featureImportances Json?
+  isActive           Boolean  @default(false)
+  trainedAt          DateTime @default(now())
+
+  @@map("model_metadata")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String
+  entity    String
+  entityId  String?
+  details   Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
+model ImportLog {
+  id             String   @id @default(uuid())
+  filename       String
+  totalRows      Int
+  successfulRows Int
+  failedRows     Int
+  errors         Json?
+  importedBy     String   @default("System")
+  createdAt      DateTime @default(now())
+
+  @@map("import_logs")
+}
+
