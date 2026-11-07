@@ -8,7 +8,8 @@ import {
   FileCheck,
   Building,
   ShieldCheck,
-  Printer
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 import api from '../services/api';
 
@@ -18,6 +19,9 @@ const Reports = () => {
   const [endDate, setEndDate] = useState('2024-12-31');
   const [reportSummary, setReportSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [downloadingExcel, setDownloadingExcel] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
   useEffect(() => {
     const loadSummary = async () => {
@@ -35,10 +39,48 @@ const Reports = () => {
     loadSummary();
   }, []);
 
-  const handleDownload = (format) => {
-    const token = localStorage.getItem('iprc_carbontrack_token');
-    const url = `http://127.0.0.1:5000/api/reports/${format}?reportType=${reportType}&startDate=${startDate}&endDate=${endDate}`;
-    window.open(url, '_blank');
+  const handleDownload = async (format) => {
+    setDownloadError('');
+    if (format === 'pdf') setDownloadingPdf(true);
+    else setDownloadingExcel(true);
+
+    try {
+      const response = await api.get(`/reports/${format}`, {
+        params: {
+          reportType,
+          startDate,
+          endDate
+        },
+        responseType: 'blob'
+      });
+
+      // Create download trigger
+      const mimeType = format === 'pdf'
+        ? 'application/pdf'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+      const extension = format === 'pdf' ? 'pdf' : 'xlsx';
+      const filename = `IPRC_CarbonTrack_${reportType}_Report.${extension}`;
+
+      const blob = new Blob([response.data], { type: mimeType });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      console.error(`Download error for ${format}:`, err);
+      // Fallback: try direct window download with token parameter
+      const token = localStorage.getItem('iprc_carbontrack_token');
+      const fallbackUrl = `http://127.0.0.1:5000/api/reports/${format}?reportType=${reportType}&startDate=${startDate}&endDate=${endDate}&token=${token}`;
+      window.open(fallbackUrl, '_blank');
+    } finally {
+      setDownloadingPdf(false);
+      setDownloadingExcel(false);
+    }
   };
 
   return (
@@ -50,6 +92,13 @@ const Reports = () => {
           Export formal environmental reports in PDF and Excel formats for statutory audits and project reviews
         </p>
       </div>
+
+      {downloadError && (
+        <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl flex items-center gap-2">
+          <AlertCircle className="w-4 h-4" />
+          <span>{downloadError}</span>
+        </div>
+      )}
 
       {/* Report Configuration Card */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-xs">
@@ -95,18 +144,38 @@ const Reports = () => {
         <div className="flex flex-wrap items-center gap-3 mt-5 pt-4 border-t border-slate-100">
           <button
             onClick={() => handleDownload('pdf')}
-            className="flex items-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+            disabled={downloadingPdf}
+            className="flex items-center gap-2 px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors disabled:opacity-50"
           >
-            <FileText className="w-4 h-4" />
-            <span>Download Official PDF Document</span>
+            {downloadingPdf ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Generating PDF Document...</span>
+              </>
+            ) : (
+              <>
+                <FileText className="w-4 h-4" />
+                <span>Download Official PDF Document</span>
+              </>
+            )}
           </button>
 
           <button
             onClick={() => handleDownload('excel')}
-            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors"
+            disabled={downloadingExcel}
+            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors disabled:opacity-50"
           >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>Download Full Excel Spreadsheet</span>
+            {downloadingExcel ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Generating Excel Spreadsheet...</span>
+              </>
+            ) : (
+              <>
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Download Full Excel Spreadsheet</span>
+              </>
+            )}
           </button>
         </div>
       </div>
@@ -174,4 +243,3 @@ const Reports = () => {
 };
 
 export default Reports;
-

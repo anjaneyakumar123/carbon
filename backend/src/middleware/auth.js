@@ -5,12 +5,22 @@ const JWT_SECRET = process.env.JWT_SECRET || 'iprc_carbontrack_super_secure_jwt_
 
 const verifyToken = async (req, res, next) => {
   try {
+    let token = null;
+
+    // Check Authorization header
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } 
+    // Also check query parameter for direct browser downloads
+    else if (req.query && req.query.token) {
+      token = req.query.token;
+    }
+
+    if (!token) {
       return res.status(401).json({ success: false, message: 'Authentication required. No token provided.' });
     }
 
-    const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
     const user = await prisma.user.findUnique({
@@ -54,4 +64,3 @@ const requireRole = (...allowedRoles) => {
 };
 
 module.exports = { verifyToken, requireRole };
-

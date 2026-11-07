@@ -92,10 +92,33 @@ const DatasetExplorer = () => {
     fetchRecords(1);
   };
 
-  const handleExport = (format) => {
-    const token = localStorage.getItem('iprc_carbontrack_token');
-    const url = `http://127.0.0.1:5000/api/dataset/export?format=${format}&limit=5000`;
-    window.open(url, '_blank');
+  const handleExport = async (format) => {
+    try {
+      const response = await api.get('/dataset/export', {
+        params: { format, limit: 5000 },
+        responseType: 'blob'
+      });
+
+      const mimeType = format === 'csv'
+        ? 'text/csv'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      const extension = format === 'csv' ? 'csv' : 'xlsx';
+
+      const blob = new Blob([response.data], { type: mimeType });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.setAttribute('download', `IPRC_CarbonTrack_Export.${extension}`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      console.error('Export failed:', err);
+      const token = localStorage.getItem('iprc_carbontrack_token');
+      const fallbackUrl = `http://127.0.0.1:5000/api/dataset/export?format=${format}&limit=5000&token=${token}`;
+      window.open(fallbackUrl, '_blank');
+    }
   };
 
   const toggleSort = (field) => {
