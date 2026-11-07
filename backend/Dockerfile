@@ -34,3 +34,4 @@ COPY --from=builder /app/src ./src
 EXPOSE 5000
 
 CMD ["node", "src/index.js"]
+

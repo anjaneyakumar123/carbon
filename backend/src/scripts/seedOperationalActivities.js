@@ -133,3 +133,4 @@ async function seedActivities() {
 seedActivities()
   .catch(console.error)
   .finally(() => prisma.$disconnect());
+

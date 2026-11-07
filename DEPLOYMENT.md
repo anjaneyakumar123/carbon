@@ -173,3 +173,4 @@ pm2 startup
 ```bash
 pg_restore -U postgres -d carbontrack -v "/var/backups/carbontrack_20261107.dump"
 ```
+
