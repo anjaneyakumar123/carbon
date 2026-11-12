@@ -1,21 +1,55 @@
 import os
-import sys
+import json
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.lib.units import inch
-pt = 1
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle, Image, KeepTogether, HRFlowable
+    SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
+    Image, KeepTogether, HRFlowable, Flowable
 )
 from reportlab.pdfgen import canvas
 
-PDF_PATH = r"c:\Users\anjan\OneDrive\Documents\Desktop\Carbon\IPRC_CarbonTrack_Minor_Project_Report.pdf"
-FIG_DIR = r"c:\Users\anjan\OneDrive\Documents\Desktop\Carbon\reports\figures"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PDF_PATH = os.path.join(BASE_DIR, 'IPRC_CarbonTrack_Minor_Project_Report.pdf')
+FIG_DIR = os.path.join(os.path.dirname(__file__), 'figures')
+LOGO_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'nitrr_logo.png')
+META_PATH = os.path.join(BASE_DIR, 'ml-service', 'models', 'models_metadata.json')
+
+NAVY = colors.HexColor('#002147')
+SUB_NAVY = colors.HexColor('#0b3b60')
+ACCENT_BLUE = colors.HexColor('#2c5282')
+BODY_COLOR = colors.HexColor('#1a202c')
+MUTED = colors.HexColor('#4a5568')
+HF_COLOR = colors.HexColor('#334155')
+TBL_HDR_BG = colors.HexColor('#e8eff7')
+TBL_SUM_BG = colors.HexColor('#f1f5f9')
+RULE_GRAY = colors.HexColor('#cbd5e1')
+
+class Marker(Flowable):
+    """Zero-height marker to record exact page index (1-based) during 2-pass build."""
+    def __init__(self, kind, key):
+        super().__init__()
+        self.kind = kind
+        self.key = key
+        self.width = 0
+        self.height = 0
+
+    def draw(self):
+        pass
+
+class TrackingDocTemplate(SimpleDocTemplate):
+    def __init__(self, filename, tracker, **kwargs):
+        super().__init__(filename, **kwargs)
+        self.tracker = tracker
+
+    def afterFlowable(self, flowable):
+        if isinstance(flowable, Marker):
+            self.tracker[flowable.kind][flowable.key] = self.page
 
 class NumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
-        super(NumberedCanvas, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._saved_page_states = []
 
     def showPage(self):
@@ -27,1281 +61,1364 @@ class NumberedCanvas(canvas.Canvas):
         for state in self._saved_page_states:
             self.__dict__.update(state)
             self.draw_page_decorations(num_pages)
-            super(NumberedCanvas, self).showPage()
-        super(NumberedCanvas, self).save()
+            super().showPage()
+        super().save()
 
     def draw_page_decorations(self, page_count):
         self.saveState()
         page_num = self._pageNumber
         w, h = A4
+        margin = 54
 
-        # Page 1 is Cover Page (no header or footer)
         if page_num == 1:
             self.restoreState()
             return
 
-        # Front matter: pages 2 to 6 (Roman numerals ii to vi)
         roman_map = {2: 'ii', 3: 'iii', 4: 'iv', 5: 'v', 6: 'vi'}
-        
-        # Header text
-        self.setFont("Helvetica", 8)
-        self.setFillColor(colors.HexColor('#2d3436'))
-
         if page_num in roman_map:
-            # Front matter header
-            self.drawRightString(w - 54, h - 36, "")
-            self.drawString(54, h - 36, "")
-            # Footer
-            roman = roman_map[page_num]
-            self.drawRightString(w - 54, 36, roman)
+            self.setFont('Times-Roman', 9)
+            self.setFillColor(HF_COLOR)
+            self.drawRightString(w - margin, 34, roman_map[page_num])
         else:
-            # Body pages (page 7 to 34 -> Page 1 of 28 to Page 28 of 28)
             body_num = page_num - 6
-            self.drawString(54, h - 36, "National Institute of Technology Raipur — Department of Information Technology")
-            self.drawRightString(w - 54, h - 36, "Minor Project Report")
-            self.setStrokeColor(colors.HexColor('#b2bec3'))
-            self.setLineWidth(0.5)
-            self.line(54, h - 42, w - 54, h - 42)
+            total_body = max(1, page_count - 6)
+            self.setFont('Times-Italic', 8.5)
+            self.setFillColor(HF_COLOR)
+            self.drawString(margin, h - 36, 'National Institute of Technology Raipur \u2014 Department of Information Technology')
+            self.drawRightString(w - margin, h - 36, 'Minor Project Report')
+            self.setStrokeColor(RULE_GRAY)
+            self.setLineWidth(0.6)
+            self.line(margin, h - 42, w - margin, h - 42)
 
-            # Footer
-            self.drawString(54, 36, "Department of Information Technology, NIT Raipur")
-            self.drawRightString(w - 54, 36, f"Page {body_num} of 28")
+            self.setFont('Times-Roman', 8.5)
+            self.drawString(margin, 34, 'Department of Information Technology, NIT Raipur')
+            self.setFont('Times-Bold', 8.5)
+            self.drawRightString(w - margin, 34, f'Page {body_num} of {total_body}')
 
         self.restoreState()
 
-def build_pdf():
-    doc = SimpleDocTemplate(
-        PDF_PATH,
-        pagesize=A4,
-        leftMargin=54,
-        rightMargin=54,
-        topMargin=54,
-        bottomMargin=54
-    )
+def make_styles():
+    s = getSampleStyleSheet()
+    return {
+        'cover_inst': ParagraphStyle('ci', parent=s['Normal'], fontName='Times-Bold', fontSize=15.5, leading=20, alignment=TA_CENTER, textColor=NAVY),
+        'cover_dept': ParagraphStyle('cd', parent=s['Normal'], fontName='Times-Bold', fontSize=11.5, leading=16, alignment=TA_CENTER, textColor=ACCENT_BLUE),
+        'cover_type': ParagraphStyle('ct', parent=s['Normal'], fontName='Times-Bold', fontSize=13, leading=18, alignment=TA_CENTER, textColor=NAVY),
+        'cover_on': ParagraphStyle('co', parent=s['Normal'], fontName='Times-Bold', fontSize=11, leading=16, alignment=TA_CENTER, textColor=MUTED),
+        'cover_proj': ParagraphStyle('cp', parent=s['Normal'], fontName='Times-Bold', fontSize=16.5, leading=22, alignment=TA_CENTER, textColor=SUB_NAVY),
+        'cover_sub': ParagraphStyle('cs', parent=s['Normal'], fontName='Times-Italic', fontSize=11, leading=15, alignment=TA_CENTER, textColor=MUTED),
+        'cover_meta_b': ParagraphStyle('cmb', parent=s['Normal'], fontName='Times-Bold', fontSize=10.5, leading=15, textColor=BODY_COLOR),
+        'cover_meta': ParagraphStyle('cm', parent=s['Normal'], fontName='Times-Roman', fontSize=10.5, leading=15, textColor=BODY_COLOR),
+        'front_title': ParagraphStyle('ft', parent=s['Normal'], fontName='Times-Bold', fontSize=14, leading=18, alignment=TA_CENTER, textColor=NAVY, spaceAfter=14),
+        'chapter': ParagraphStyle('ch', parent=s['Normal'], fontName='Times-Bold', fontSize=14.8, leading=19, textColor=NAVY, spaceBefore=4, spaceAfter=10),
+        'h2': ParagraphStyle('h2', parent=s['Normal'], fontName='Times-Bold', fontSize=11.5, leading=15.5, textColor=SUB_NAVY, spaceBefore=10, spaceAfter=5),
+        'h3': ParagraphStyle('h3', parent=s['Normal'], fontName='Times-Bold', fontSize=10.4, leading=14, textColor=ACCENT_BLUE, spaceBefore=6, spaceAfter=3.5),
+        'body': ParagraphStyle('body', parent=s['Normal'], fontName='Times-Roman', fontSize=10.0, leading=14.8, alignment=TA_JUSTIFY, textColor=BODY_COLOR, spaceAfter=7.5),
+        'bullet': ParagraphStyle('bul', parent=s['Normal'], fontName='Times-Roman', fontSize=9.9, leading=14.4, alignment=TA_JUSTIFY, textColor=BODY_COLOR, leftIndent=14, firstLineIndent=-8, spaceAfter=5.0),
+        'eq': ParagraphStyle('eq', parent=s['Normal'], fontName='Times-Italic', fontSize=10.1, leading=15.0, alignment=TA_CENTER, textColor=NAVY, spaceBefore=7, spaceAfter=8),
+        'caption': ParagraphStyle('cap', parent=s['Normal'], fontName='Times-Italic', fontSize=9.0, leading=12.5, alignment=TA_CENTER, textColor=HF_COLOR, spaceBefore=4, spaceAfter=9),
+        'tbl_title': ParagraphStyle('tt', parent=s['Normal'], fontName='Times-Bold', fontSize=9.5, leading=13, alignment=TA_CENTER, textColor=NAVY, spaceBefore=6, spaceAfter=5),
+        'tbl_hdr': ParagraphStyle('th', parent=s['Normal'], fontName='Times-Bold', fontSize=8.4, leading=11, alignment=TA_CENTER, textColor=NAVY),
+        'tbl_cell': ParagraphStyle('tc', parent=s['Normal'], fontName='Times-Roman', fontSize=8.3, leading=11.2, alignment=TA_LEFT, textColor=BODY_COLOR),
+        'tbl_cell_c': ParagraphStyle('tcc', parent=s['Normal'], fontName='Times-Roman', fontSize=8.3, leading=11.2, alignment=TA_CENTER, textColor=BODY_COLOR),
+        'tbl_cell_b': ParagraphStyle('tcb', parent=s['Normal'], fontName='Times-Bold', fontSize=8.3, leading=11.2, alignment=TA_LEFT, textColor=NAVY),
+        'ref': ParagraphStyle('ref', parent=s['Normal'], fontName='Times-Roman', fontSize=9.2, leading=12.8, alignment=TA_JUSTIFY, textColor=BODY_COLOR, leftIndent=20, firstLineIndent=-20, spaceAfter=5.5),
+        'toc_l': ParagraphStyle('tl', parent=s['Normal'], fontName='Times-Bold', fontSize=9.8, leading=13, textColor=BODY_COLOR),
+        'toc_d': ParagraphStyle('td', parent=s['Normal'], fontName='Times-Roman', fontSize=9.2, leading=13, textColor=MUTED, alignment=TA_CENTER),
+        'toc_r': ParagraphStyle('tr', parent=s['Normal'], fontName='Times-Bold', fontSize=9.8, leading=13, textColor=NAVY, alignment=TA_RIGHT),
+        'lof_l': ParagraphStyle('ll', parent=s['Normal'], fontName='Times-Roman', fontSize=8.6, leading=11.2, textColor=BODY_COLOR),
+    }
 
-    styles = getSampleStyleSheet()
+def add_figure(story, st, img_name, caption_text, key, w_inch=6.25, h_inch=2.85):
+    path = os.path.join(FIG_DIR, img_name)
+    img = Image(path, width=w_inch*72, height=h_inch*72, kind='proportional')
+    tbl = Table([[img]], colWidths=[487])
+    tbl.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('BOX', (0, 0), (-1, -1), 0.5, RULE_GRAY),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    story.append(KeepTogether([
+        Marker('figures', key),
+        tbl,
+        Paragraph(caption_text, st['caption'])
+    ]))
 
-    # Custom styles matching reference document
-    primary_color = colors.HexColor('#1b3a4b')
-    text_color = colors.HexColor('#1e293b')
-    
-    title_style = ParagraphStyle(
-        'CoverTitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=15,
-        leading=20,
-        alignment=1, # Center
-        textColor=primary_color
-    )
-    
-    subtitle_style = ParagraphStyle(
-        'CoverSubtitle',
-        parent=styles['Normal'],
-        fontName='Helvetica-Oblique',
-        fontSize=10,
-        leading=14,
-        alignment=1,
-        textColor=colors.HexColor('#475569')
-    )
-    
-    chapter_style = ParagraphStyle(
-        'ChapterHeading',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=13,
-        leading=17,
-        textColor=primary_color,
-        spaceAfter=10
-    )
+def add_styled_table(story, st, title_text, headers, rows, col_widths, key, summary_last=False):
+    data = [[Paragraph(h, st['tbl_hdr']) for h in headers]]
+    for r_idx, row in enumerate(rows):
+        is_sum = summary_last and (r_idx == len(rows) - 1)
+        styled_row = []
+        for c_idx, cell in enumerate(row):
+            style = st['tbl_cell_b'] if is_sum else (st['tbl_cell'] if c_idx == 0 else st['tbl_cell_c'])
+            styled_row.append(Paragraph(str(cell), style))
+        data.append(styled_row)
 
-    h1_style = ParagraphStyle(
-        'SecHeading',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=10.5,
-        leading=14,
-        textColor=primary_color,
-        spaceBefore=7,
-        spaceAfter=4
-    )
+    t = Table(data, colWidths=col_widths, repeatRows=1)
+    ts = [
+        ('BACKGROUND', (0, 0), (-1, 0), TBL_HDR_BG),
+        ('LINEABOVE', (0, 0), (-1, 0), 1.2, NAVY),
+        ('LINEBELOW', (0, 0), (-1, 0), 0.9, NAVY),
+        ('LINEBELOW', (0, -1), (-1, -1), 1.2, NAVY),
+        ('GRID', (0, 1), (-1, -1), 0.35, RULE_GRAY),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 4.0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4.0),
+        ('LEFTPADDING', (0, 0), (-1, -1), 5),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+    ]
+    if summary_last:
+        ts.append(('BACKGROUND', (0, -1), (-1, -1), TBL_SUM_BG))
+    t.setStyle(TableStyle(ts))
+    story.append(KeepTogether([
+        Marker('tables', key),
+        Paragraph(title_text, st['tbl_title']),
+        t,
+        Spacer(1, 9)
+    ]))
 
-    h2_style = ParagraphStyle(
-        'SubSecHeading',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor('#2c3e50'),
-        spaceBefore=5,
-        spaceAfter=2
-    )
+def make_toc_table(entries, page_map, st, is_lof=False):
+    rows = []
+    for key, label, default_pg in entries:
+        pg = page_map.get(key, default_pg)
+        if isinstance(pg, int) and pg > 6:
+            pg_str = str(pg - 6)
+        else:
+            pg_str = str(pg)
+        lbl_style = st['lof_l'] if is_lof else st['toc_l']
+        dots = '. ' * 15 if is_lof else '. ' * 22
+        rows.append([Paragraph(label, lbl_style), Paragraph(dots, st['toc_d']), Paragraph(pg_str, st['toc_r'])])
+    cw = [330, 120, 35] if is_lof else [260, 190, 35]
+    t = Table(rows, colWidths=cw)
+    t.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
+        ('TOPPADDING', (0, 0), (-1, -1), 2.4 if is_lof else 5.5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2.4 if is_lof else 5.5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    return t
 
-    body_style = ParagraphStyle(
-        'ReportBody',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.3,
-        leading=11.6,
-        alignment=4, # Justify
-        textColor=text_color,
-        spaceAfter=5
-    )
-
-    bullet_style = ParagraphStyle(
-        'ReportBullet',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.3,
-        leading=11.4,
-        leftIndent=12,
-        firstLineIndent=-12,
-        alignment=4,
-        textColor=text_color,
-        spaceAfter=4
-    )
-
-    fig_cap_style = ParagraphStyle(
-        'FigCaption',
-        parent=styles['Normal'],
-        fontName='Helvetica-Oblique',
-        fontSize=7.5,
-        leading=10,
-        alignment=1,
-        textColor=colors.HexColor('#2d3436'),
-        spaceBefore=3,
-        spaceAfter=6
-    )
-
-    table_cell = ParagraphStyle(
-        'TableCell',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=6.8,
-        leading=8.5,
-        textColor=text_color
-    )
-
-    table_cell_bold = ParagraphStyle(
-        'TableCellBold',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=6.8,
-        leading=8.5,
-        textColor=text_color
-    )
-
-    table_header = ParagraphStyle(
-        'TableHeader',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=7,
-        leading=9,
-        alignment=1,
-        textColor=colors.HexColor('#1e293b')
-    )
-
+def build_story(st, meta, tracker_ref):
     story = []
 
     # =========================================================================
     # PAGE 1: COVER PAGE
     # =========================================================================
-    story.append(Spacer(1, 15))
-    story.append(Paragraph("<b>NATIONAL INSTITUTE OF TECHNOLOGY RAIPUR</b>", ParagraphStyle('CoverH1', parent=title_style, fontSize=13, leading=16)))
-    story.append(Paragraph("<b>DEPARTMENT OF INFORMATION TECHNOLOGY</b>", ParagraphStyle('CoverH2', parent=title_style, fontSize=11, leading=14, textColor=colors.HexColor('#2c3e50'))))
-    story.append(Spacer(1, 4))
-    story.append(HRFlowable(width="90%", thickness=1.2, color=primary_color, spaceAfter=25))
-    
-    # Emblem representation
-    story.append(Spacer(1, 20))
-    # Seal Table
-    seal_table = Table([[Paragraph("<font size=28 color='#1b3a4b'><b>🏛️</b></font><br/><font size=8 color='#475569'><b>ESTD. 1956<br/>NIT RAIPUR</b></font>", ParagraphStyle('Seal', alignment=1))]], colWidths=[120])
-    seal_table.setStyle(TableStyle([
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOX', (0,0), (-1,-1), 1.5, primary_color),
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
-        ('TOPPADDING', (0,0), (-1,-1), 10),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
-    ]))
-    story.append(seal_table)
-    story.append(Spacer(1, 30))
-
-    story.append(Paragraph("<b>MINOR PROJECT REPORT</b>", ParagraphStyle('CoverSub1', parent=title_style, fontSize=12, leading=15)))
-    story.append(Paragraph("ON", ParagraphStyle('CoverOn', parent=subtitle_style, fontSize=10, leading=14)))
-    story.append(Spacer(1, 4))
-    story.append(Paragraph("<b>IPRC CARBONTRACK: CARBON FOOTPRINT MONITORING AND MEASUREMENT SYSTEM</b>", title_style))
-    story.append(Spacer(1, 4))
-    story.append(Paragraph("<i>(A Full-Stack Industrial Environmental Accounting, Predictive Analytics, and Multi-Scope Auditing Framework)</i>", subtitle_style))
-    story.append(Spacer(1, 6))
-    story.append(Paragraph("<b>Project Reference: RES-IPRC-2025-003 &bull; ISRO Propulsion Complex, Mahendragiri</b>", ParagraphStyle('Ref', alignment=1, fontSize=8.5, leading=11, fontName='Helvetica-Bold', textColor=colors.HexColor('#0284c7'))))
-
-    story.append(Spacer(1, 45))
-
-    sub_guided = [
-        [
-            Paragraph("<b>Submitted by:</b>", ParagraphStyle('SubBy', fontName='Helvetica-Bold', fontSize=9.5, leading=13)),
-            Paragraph("<b>Guided by:</b>", ParagraphStyle('GuideBy', fontName='Helvetica-Bold', fontSize=9.5, leading=13))
-        ],
-        [
-            Paragraph("<b>D. V. V. Anjaneya Kumar</b> (Roll No: 23118029)<br/><b>Yash Mittal</b> (Roll No: 22118111)<br/><br/><b>Degree:</b> B.Tech<br/><b>Branch:</b> Information Technology<br/><b>Semester:</b> 7th Semester", ParagraphStyle('Cand', fontName='Helvetica', fontSize=8.5, leading=12)),
-            Paragraph("<b>Dr. Gyanendra Kumar Verma</b><br/>Department of Information Technology<br/>National Institute of Technology Raipur<br/><br/>", ParagraphStyle('Guide', fontName='Helvetica', fontSize=8.5, leading=12))
-        ]
-    ]
-    sg_table = Table(sub_guided, colWidths=[240, 240])
-    sg_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('LEFTPADDING', (0,0), (-1,-1), 0),
-        ('RIGHTPADDING', (0,0), (-1,-1), 0),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
-    ]))
-    story.append(sg_table)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 2: DECLARATION (ii)
-    # =========================================================================
-    story.append(Spacer(1, 20))
-    story.append(Paragraph("<b>DECLARATION</b>", ParagraphStyle('DecHead', parent=title_style, fontSize=14, leading=18)))
-    story.append(Spacer(1, 20))
-    story.append(Paragraph(
-        "We hereby declare that this minor project report entitled <b>\"IPRC CarbonTrack: Carbon Footprint Monitoring and Measurement System\"</b> is our own original work completed under the guidance of <b>Dr. Gyanendra Kumar Verma</b>, Department of Information Technology, National Institute of Technology, Raipur. This research was carried out in technical alignment with research mandate <b>RES-IPRC-2025-003</b> (*Development of Software for Carbon Footprint Monitoring, Measurement and Recording of Activities*) for the <b>ISRO Propulsion Complex (IPRC), Mahendragiri</b>.",
-        body_style
-    ))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph(
-        "This report contains no material previously published or written by another author except where due academic reference and citation is made in the text. This work has not been submitted in part or full for the award of any other degree or diploma in this institute or any other university.",
-        body_style
-    ))
-    story.append(Spacer(1, 180))
-
-    dec_sig = [
-        [Paragraph("", body_style), Paragraph("<b>Submitted by:</b>", ParagraphStyle('SBy', fontName='Helvetica-Bold', fontSize=9, leading=12))],
-        [Paragraph("", body_style), Paragraph("<b>D. V. V. Anjaneya Kumar (23118029)</b><br/><b>Yash Mittal (22118111)</b>", ParagraphStyle('SNm', fontName='Helvetica', fontSize=8.5, leading=13))]
-    ]
-    t_dec = Table(dec_sig, colWidths=[280, 200])
-    t_dec.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
-    story.append(t_dec)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 3: ACKNOWLEDGEMENT (iii)
-    # =========================================================================
-    story.append(Spacer(1, 20))
-    story.append(Paragraph("<b>ACKNOWLEDGEMENT</b>", ParagraphStyle('AckHead', parent=title_style, fontSize=14, leading=18)))
-    story.append(Spacer(1, 20))
-    story.append(Paragraph(
-        "It is a privilege to express our sincere gratitude to the faculty and mentors of the National Institute of Technology, Raipur, for their profound guidance, constant support, and academic encouragement. We would like to express our deepest thanks to <b>Dr. Sudhakar Pandey</b>, Head of the Department of Information Technology, for granting us the wonderful opportunity and institutional facilities to pursue this minor project as an integral part of our academic curriculum.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "We are profoundly indebted to our project supervisor, <b>Dr. Gyanendra Kumar Verma</b>, Department of Information Technology, for his exceptional guidance, invaluable constructive feedback, inspiring mentorship, and continuous encouragement throughout every single phase of this research work. His insightful technical suggestions and rigorous standards have greatly enriched our understanding and execution of full-stack system architecture, database design, environmental accounting, and machine learning pipelines.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "We also extend our sincere appreciation to the technical teams and published guidelines under research initiative <b>RES-IPRC-2025-003</b> from the <b>ISRO Propulsion Complex (IPRC), Mahendragiri</b>, whose environmental protection mandate provided the authentic operational backdrop for designing this platform. We thank the faculty members, technical laboratory assistants, and staff members of the Department of Information Technology and the Institute for fostering a collaborative academic environment.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Last, but certainly not least, we convey our heartfelt gratitude to our parents, family members, and peers for their unconditional love, moral support, and endless encouragement throughout our undergraduate studies.",
-        body_style
-    ))
-    story.append(Spacer(1, 140))
-
-    ack_sig = [
-        [Paragraph("", body_style), Paragraph("<b>D. V. V. Anjaneya Kumar (23118029)</b><br/><b>Yash Mittal (22118111)</b>", ParagraphStyle('ANm', fontName='Helvetica', fontSize=8.5, leading=13))]
-    ]
-    t_ack = Table(ack_sig, colWidths=[280, 200])
-    story.append(t_ack)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 4: ABSTRACT (iv)
-    # =========================================================================
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("<b>ABSTRACT</b>", ParagraphStyle('AbsHead', parent=title_style, fontSize=14, leading=18)))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(
-        "Large-scale national aerospace and industrial installations, such as the <b>ISRO Propulsion Complex (IPRC)</b> at Mahendragiri, face stringent technological imperatives to measure, record, and mitigate greenhouse gas (GHG) emissions across mission-critical rocket propulsion testing, cryogenic propellant processing, high-voltage electrical distribution, captive diesel generation, and campus logistics. However, conventional industrial environmental tracking remains crippled by isolated paper logbooks, unversioned spreadsheet silos, and an inability to bridge the divide between longitudinal statistical datasets and granular activity-based carbon accounting across GHG Protocol Scopes 1, 2, and 3. In this B.Tech Minor Project, we design, engineer, evaluate, and benchmark a complete, production-grade web software system named <b>IPRC CarbonTrack: Carbon Footprint Monitoring and Measurement System</b>, directly addressing research proposal <b>RES-IPRC-2025-003</b> (*Research Area: Environmental Protection*).",
-        body_style
-    ))
-    story.append(Paragraph(
-        "The project integrates and evaluates an authentic preprocessed observation dataset comprising <b>10,000 baseline records</b> across 14 standardized and encoded features spanning a 27-year operational horizon (2024–2051), with physical target variable <code>Carbon_Emission_kgCO2</code> (&mu; = 22.94 kgCO2, &sigma; = 9.72 kgCO2). To eliminate feature corruption, we introduce a strict <i>Invariant Data Protection Architecture</i> that mathematically segregates standardized continuous features (Z-scores) from physical activity multipliers. The platform operates under a dual-paradigm architecture: <b>Mode A (Dataset Analytics & Predictive Modeling)</b> implements multi-dimensional correlation analysis, interactive cross-filtering, and an autonomous <b>FastAPI / Scikit-Learn</b> machine learning prediction microservice hosting five supervised regression algorithms (Linear Regression, Ridge, Random Forest, Gradient Boosting, Support Vector Regressors). Benchmarking demonstrates that Ordinary Least Squares and Ridge regressors attain an exceptional coefficient of determination (Test R&sup2; = 0.999999) and Root Mean Squared Error (RMSE = 0.00298 kgCO2), providing milligram-level target prediction fidelity.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Concurrently, <b>Mode B (Activity-Based Accounting)</b> equips authenticated environmental officers with eight specialized data capture modules (Electricity, Diesel/Petrol Fuel, Fleet Transportation, Hazardous Solid & Propellant Waste, Chemical Effluent Neutralization, Water Management, Captive Solar PV, and Tree Plantation Offsets). These modules automatically compute carbon emissions using versioned, audited emission factors derived from the Central Electricity Authority of India (CEA v19.0, 0.716 kgCO2/kWh) and IPCC AR6 guidelines. A dynamic CSV/XLSX schema ingestion engine was engineered and validated using an independent 100-record synthetic test dataset, achieving 100% column detection and automated PostgreSQL batch migration. Built upon a <b>React 18 / Tailwind CSS</b> industrial interface, an Express REST API with Prisma ORM, and automated A4 PDF sustainability audit report generation, IPRC CarbonTrack delivers an auditable, secure, and deployment-ready software system for scientific aerospace complexes.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 5: CONTENTS (v)
-    # =========================================================================
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("<b>CONTENTS</b>", ParagraphStyle('CntHead', parent=title_style, fontSize=14, leading=18)))
-    story.append(Spacer(1, 15))
-
-    toc_data = [
-        [Paragraph("<b>CERTIFICATE</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>i</b>", body_style)],
-        [Paragraph("<b>DECLARATION</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>ii</b>", body_style)],
-        [Paragraph("<b>ACKNOWLEDGEMENT</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>iii</b>", body_style)],
-        [Paragraph("<b>ABSTRACT</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>iv</b>", body_style)],
-        [Paragraph("<b>LIST OF FIGURES & TABLES</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>vi</b>", body_style)],
-        [Paragraph("<b>CHAPTER 1: INTRODUCTION</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>1</b>", body_style)],
-        [Paragraph("<b>CHAPTER 2: LITERATURE REVIEW</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>5</b>", body_style)],
-        [Paragraph("<b>CHAPTER 3: DATASET AND PREPROCESSING</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>8</b>", body_style)],
-        [Paragraph("<b>CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>11</b>", body_style)],
-        [Paragraph("<b>CHAPTER 5: MATHEMATICAL FORMULATION</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>15</b>", body_style)],
-        [Paragraph("<b>CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>18</b>", body_style)],
-        [Paragraph("<b>CHAPTER 7: DISCUSSION</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>24</b>", body_style)],
-        [Paragraph("<b>CHAPTER 8: CONCLUSION AND FUTURE SCOPE</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>26</b>", body_style)],
-        [Paragraph("<b>REFERENCES</b>", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("<b>28</b>", body_style)],
-    ]
-    t_toc = Table(toc_data, colWidths=[200, 240, 40])
-    t_toc.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('TOPPADDING', (0,0), (-1,-1), 6),
-    ]))
-    story.append(t_toc)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 6: LIST OF FIGURES & TABLES (vi)
-    # =========================================================================
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("<b>LIST OF FIGURES & TABLES</b>", ParagraphStyle('LoFTHead', parent=title_style, fontSize=14, leading=18)))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph("<b>List of Figures</b>", h1_style))
-
-    figs_data = [
-        [Paragraph("Fig. 1: Schematic of IPRC Facility Infrastructure & Operational Zones", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("2", body_style)],
-        [Paragraph("Fig. 2: Raw vs. Preprocessed Environmental & Activity Signals [20]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("9", body_style)],
-        [Paragraph("Fig. 3: Multi-Category Energy & Power Density Decomposition [20]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("10", body_style)],
-        [Paragraph("Fig. 4: Functional Carbon Dependency Matrix & Binarized Graph [1, 9]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("11", body_style)],
-        [Paragraph("Fig. 5: Distribution of Activity Connectivity Across Test Regimes [1]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("12", body_style)],
-        [Paragraph("Fig. 6: Predictive Pipeline: State Space, Persistence Diagram & Barcode [11, 14, 21]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("13", body_style)],
-        [Paragraph("Fig. 7: End-to-End Pipeline Architecture of IPRC CarbonTrack Framework", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("13", body_style)],
-        [Paragraph("Fig. 8: Supervised Model Training Loss Trajectory (80 Epochs) [15]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("19", body_style)],
-        [Paragraph("Fig. 9: Multi-Model Regression Error Curves & Residual Distribution [1, 15]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("19", body_style)],
-        [Paragraph("Fig. 10: Master Model Ablation Study: Overall Performance Benchmark [1]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("21", body_style)],
-        [Paragraph("Fig. 11: Systematic Ingestion Window Segmentation Strategy Comparison [1]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("20", body_style)],
-        [Paragraph("Fig. 12: Substation Infrastructure Electrical Load Localization [19]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("22", body_style)],
-    ]
-    t_figs = Table(figs_data, colWidths=[200, 240, 40])
-    t_figs.setStyle(TableStyle([('BOTTOMPADDING', (0,0), (-1,-1), 1), ('TOPPADDING', (0,0), (-1,-1), 1)]))
-    story.append(t_figs)
-
+    story.append(Spacer(1, 18))
+    story.append(Paragraph('NATIONAL INSTITUTE OF TECHNOLOGY RAIPUR', st['cover_inst']))
+    story.append(Paragraph('DEPARTMENT OF INFORMATION TECHNOLOGY', st['cover_dept']))
     story.append(Spacer(1, 8))
-    story.append(Paragraph("<b>List of Tables</b>", h1_style))
-    tbls_data = [
-        [Paragraph("Table 2.1: Methodological Comparison of Carbon Accounting Approaches [1, 10, 17, 18]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("7", body_style)],
-        [Paragraph("Table 3.1: Observation Dataset Structure & Operational Target Demographics [1, 19]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("8", body_style)],
-        [Paragraph("Table 6.1: Baseline OLS vs. Advanced Machine Learning Regressors [1, 15, 16]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("19", body_style)],
-        [Paragraph("Table 6.2: Systematic Ingestion Window Strategy Comparison [1, 15]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("20", body_style)],
-        [Paragraph("Table 6.3: Master Ablation Study Across All Six System Configurations [1, 15, 16]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("21", body_style)],
-        [Paragraph("Table 6.4: Non-Parametric Wilcoxon Signed-Rank Test for Significance [1, 14]", body_style), Paragraph(". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .", body_style), Paragraph("22", body_style)],
-    ]
-    t_tbls = Table(tbls_data, colWidths=[200, 240, 40])
-    t_tbls.setStyle(TableStyle([('BOTTOMPADDING', (0,0), (-1,-1), 1), ('TOPPADDING', (0,0), (-1,-1), 1)]))
-    story.append(t_tbls)
-    story.append(PageBreak())
+    story.append(HRFlowable(width='82%', thickness=1.5, color=NAVY, spaceBefore=2, spaceAfter=18))
 
-    # =========================================================================
-    # PAGE 7: CHAPTER 1: INTRODUCTION (Body Page 1)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 1: INTRODUCTION</b>", chapter_style))
-    story.append(Paragraph("<b>1.1 Clinical Background of Industrial Emissions and Decarbonization Mandates</b>", h1_style))
-    story.append(Paragraph(
-        "Anthropogenic climate change driven by excessive greenhouse gas (GHG) emissions represents one of the most critical environmental crises confronting humanity, requiring aggressive global mitigation targets across heavy industrial, energy, and aerospace domains [1]. Atmospheric carbon dioxide concentrations have surged past 420 parts per million, precipitating extreme climate volatility and prompting stringent international environmental accords [2]. In response, sovereign nations worldwide have codified binding decarbonization frameworks, notably India's COP26 pledge to achieve economy-wide Net-Zero emissions by 2070, supported by an intermediate target of reducing the emission intensity of gross domestic product by 45% by 2030 [3].",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Within this national strategic landscape, research and development institutions operated under the Indian Space Research Organisation (ISRO), such as the <b>ISRO Propulsion Complex (IPRC)</b> at Mahendragiri, occupy a pivotal position. While space transportation systems remain vital for national communication, navigation, and remote sensing infrastructure, the ground support facilities that sustain liquid engine testing, solid motor handling, and cryogenic stage qualification generate substantial energy footprints [4]. Heavy industrial facilities consume millions of kilowatt-hours of grid electricity annually, consume thousands of liters of diesel fuel for auxiliary electrical generation during mission-critical engine firings, and produce complex industrial and chemical effluents requiring specialized treatment [5]. The ultimate objective of industrial environmental sustainability is achieving comprehensive carbon neutrality—delineating every organizational emission source and executing aggressive energy transition strategies without compromising mission readiness or test stand safety [6].",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Operationally, the primary requirement for achieving facility-wide decarbonization is the exact, automated spatial and temporal localization of high-emission activity clusters—analogous to delineating critical focal points in biological or clinical diagnostics [1]. Reliable quantification of emission hot-spots represents the single most decisive factor governing the efficacy of sustainability interventions. Under-estimation of carbon intensity leads to non-compliance with statutory environmental regulations, whereas misdirected mitigation investments unnecessarily escalate capital expenditure without yielding proportionate emission abatements [7].",
-        body_style
-    ))
-    story.append(Paragraph("<b>1.2 Industrial Activity Monitoring Modality & Environmental Evaluation</b>", h1_style))
-    story.append(Paragraph(
-        "During conventional environmental audits, static annual reporting frameworks—such as quarterly power invoices, logistics fuel receipts, and hazardous waste manifests—are compiled manually to assemble high-level greenhouse gas inventories [8]. However, in highly dynamic, complex scientific establishments like IPRC Mahendragiri, these retrospective manual methods are fundamentally insufficient. Conventional reporting suffers from extreme temporal coarseness, lack of digital traceability, high vulnerability to human reporting bias, and complete absence of real-time multi-channel telemetry integration [9].",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Consequently, modern industrial facilities are actively transitioning toward continuous, automated environmental telemetry architectures [10]. Automated monitoring deploys multi-feeder smart electrical meters, automated fuel dispensing sensors, fleet GPS odometers, and effluent stream monitors distributed stereotactically across test complexes, compressor houses, and administrative campuses. These multi-lead digital sensors capture continuous physical consumption data with sub-second resolution, free from manual transcription errors and volume estimation artifacts [11].",
-        body_style
-    ))
-    story.append(PageBreak())
+    if os.path.exists(LOGO_PATH):
+        logo = Image(LOGO_PATH, width=96, height=96, kind='proportional')
+        logo.hAlign = 'CENTER'
+        story.append(logo)
+    story.append(Spacer(1, 16))
 
-    # =========================================================================
-    # PAGE 8: CHAPTER 1 (Body Page 2)
-    # =========================================================================
-    story.append(Image(os.path.join(FIG_DIR, 'fig1_facility.png'), width=480, height=180))
-    story.append(Paragraph("<i>Fig. 1: Schematic of IPRC Facility Infrastructure & Operational Zones</i>", fig_cap_style))
+    story.append(Paragraph('MINOR PROJECT REPORT', st['cover_type']))
     story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>1.3 Problem Statement</b>", h1_style))
-    story.append(Paragraph(
-        "Despite the availability of sensor instrumentation across modern facilities, the operational consolidation and interpretation of multi-source environmental telemetry remains an arduous manual bottleneck. Facilities generate tens of thousands of data records across disparate operational units [12]. Environmental engineers and facility managers must manually parse multi-source logs to identify abnormal peak emission events—typically manifesting as sudden surge spikes in auxiliary diesel combustion, chilled-water plant overconsumption, or unexpected chemical neutralization loads. This conventional manual paradigm suffers from four severe intrinsic limitations:",
-        body_style
-    ))
-    story.append(Paragraph("<b>1. Extreme Labor Intensity:</b> Manually consolidating hundreds of sensor feeds across dozens of departmental buildings requires hundreds of hours of specialized manual effort, delaying statutory regulatory filings.", bullet_style))
-    story.append(Paragraph("<b>2. Subjectivity and Inter-Auditor Variability:</b> Different environmental auditors frequently disagree on scope allocations and emission factor vintages, especially when shared electrical infrastructure powers both test stands and office quarters.", bullet_style))
-    story.append(Paragraph("<b>3. Calculation Inconsistencies & Feature Misuse:</b> Historical research datasets frequently contain standardized (Z-score normalized) features. Auditing personnel frequently confuse standardized scores with physical quantities, resulting in invalid emission calculations.", bullet_style))
-    story.append(Paragraph("<b>4. Lack of Predictive Modeling & Decision Support:</b> Static spreadsheets cannot provide forward-looking regression predictions to forecast the carbon footprint of forthcoming engine test campaigns or simulate solar PV offsets.", bullet_style))
-
-    story.append(Paragraph("<b>1.4 Motivation and Research Significance</b>", h1_style))
-    story.append(Paragraph(
-        "The critical operational bottlenecks described above motivate the design of an automated, objective, mathematically grounded computational web application for carbon footprint monitoring and measurement. Rather than treating sensor feeds merely as isolated univariate records, modern systems engineering conceptualizes industrial facilities as complex, interconnected multi-node operational networks [13]. During transitions between quiescent standby states and high-intensity hot-firing operations, functional energy and material consumption undergo dramatic multi-variate reorganization, characterized by intense synchronized demand surges across electrical substations, liquid propellant cryo-pumps, and fleet logistics. Capturing these operational dynamics demands advanced multi-tier computational frameworks combining multivariate statistical analysis, supervised machine learning, dynamic schema ingestion, and automated report generation.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 9: CHAPTER 1 (Body Page 3)
-    # =========================================================================
-    story.append(Paragraph("<b>1.5 Project Objectives</b>", h1_style))
-    story.append(Paragraph(
-        "The overarching goal of this B.Tech Minor Project is to design, implement, evaluate, and benchmark a complete, production-ready web software system called <b>IPRC CarbonTrack: Carbon Footprint Monitoring and Measurement System</b>, fulfilling research mandate <b>RES-IPRC-2025-003</b> (*Research Area: Environmental Protection*). The specific technical objectives are:",
-        body_style
-    ))
-    story.append(Paragraph("<b>1. Full-Stack Microservices Architecture:</b> Engineer a production-ready, enterprise-grade web application integrating a modern React 18 / Tailwind CSS frontend, a Node.js / Express core API gateway, a PostgreSQL relational database with Prisma ORM, and an autonomous Python FastAPI prediction engine.", bullet_style))
-    story.append(Paragraph("<b>2. Longitudinal Dataset Inspection & Invariance Preservation:</b> Ingest, inspect, and rigorously preserve the supplied preprocessed dataset comprising 10,000 baseline observations (2024–2051), strictly isolating standardized Z-score features from physical emission factor equations.", bullet_style))
-    story.append(Paragraph("<b>3. Dual-Mode Operational Framework:</b> Formulate and implement dual analytical modes: Mode A (Dataset Analytics & ML Modeling) for longitudinal multi-variate analysis, and Mode B (Activity Monitoring) for real-time physical activity entry with automated Scope 1, 2, and 3 GHG classification.", bullet_style))
-    story.append(Paragraph("<b>4. Supervised Machine Learning Benchmark:</b> Develop, train, evaluate, and benchmark five supervised regression algorithms (Linear Regression, Ridge, Random Forest, Gradient Boosting, SVR) to predict target carbon emissions from environmental and operational features.", bullet_style))
-    story.append(Paragraph("<b>5. Dynamic Data Import & Schema Ingestion:</b> Implement a robust drag-and-drop CSV/XLSX ingestion pipeline capable of automatic column mapping, duplicate detection, date validation, and batch database insertion.", bullet_style))
-    story.append(Paragraph("<b>6. Executive Audit & Report Generation:</b> Build a server-side A4 PDF sustainability report generator utilizing an absolute coordinate grid for zero text collisions, alongside structured Excel dataset export capabilities.", bullet_style))
-    story.append(Paragraph("<b>7. Role-Based Access Control & Auditing:</b> Enforce enterprise security via JWT authentication, bcrypt password hashing, role hierarchies (ADMIN, OFFICER, ANALYST), and persistent audit trails.", bullet_style))
-
-    story.append(Paragraph("<b>1.6 Scope of the Project</b>", h1_style))
-    story.append(Paragraph(
-        "This project focuses on the computational design, implementation, and empirical validation of an industrial carbon accounting platform for the ISRO Propulsion Complex (IPRC) at Mahendragiri. The computational pipeline processes both longitudinal standardized datasets and physical sensor logs, incorporating electricity consumption, stationary diesel generation, fleet logistics, industrial solid and propellant effluent waste, captive solar generation, and afforestation offsets. The software scope encompasses 15 functional web portals, automated regression services, and verified ingestion pipelines.",
-        body_style
-    ))
-
-    story.append(Paragraph("<b>1.7 Organization of the Report</b>", h1_style))
-    story.append(Paragraph("The remainder of this report is organized as follows:", body_style))
-    story.append(Paragraph("&bull; <b>Chapter 2 (Literature Review)</b> surveys greenhouse gas accounting standards, industrial monitoring software platforms, and machine learning paradigms in environmental forecasting, establishing research gaps.", bullet_style))
-    story.append(Paragraph("&bull; <b>Chapter 3 (Dataset and Preprocessing)</b> details the 10,000-record benchmark dataset, column data dictionary, standardized score properties, and signal preprocessing pipelines.", bullet_style))
-    story.append(Paragraph("&bull; <b>Chapter 4 (System Design and Methodology)</b> presents the multi-tier microservices architecture, PostgreSQL schema modeling, Mode A/B workflows, and UI navigation sitemaps.", bullet_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 10: CHAPTER 1 (Body Page 4)
-    # =========================================================================
-    story.append(Paragraph(
-        "&bull; <b>Chapter 5 (Mathematical Formulation)</b> provides formal mathematical equations governing feature standardization, factor-based activity calculations, Scope 1/2/3 aggregation, regression models, and loss functions.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Chapter 6 (Experimental Results and Evaluation)</b> delivers empirical findings, including 10,000-record exploratory statistics, 5-model regression benchmarks, synthetic dataset ingestion test results, and PDF generator verification.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Chapter 7 (Discussion)</b> interprets the operational and computational implications of our findings, contrasts standardized vs. physical accounting paradigms, and examines industrial feasibility.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Chapter 8 (Conclusion and Future Scope)</b> summarizes research contributions, reviews objectives achieved, discusses limitations, and outlines future frontiers such as IoT SCADA telemetry and satellite remote sensing.",
-        bullet_style
-    ))
-    story.append(Spacer(1, 15))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor('#cbd5e1'), spaceAfter=20))
-    story.append(Paragraph("<b>Summary of Operational Architectural Modules in IPRC CarbonTrack</b>", h2_style))
-    story.append(Paragraph(
-        "The software architecture realized in this research is structured into four primary sub-systems that operate concurrently across independent network ports: (1) <b>Presentation Tier</b> on port 3000 delivering client-side analytical dashboards; (2) <b>Application API Gateway</b> on port 5000 executing business rules, role enforcement, and database transactions; (3) <b>Relational Data Tier</b> on port 5432 managing ACID-compliant operational tables; and (4) <b>Predictive ML Tier</b> on port 8000 providing real-time regression inference. This modular segregation ensures complete failure isolation, allowing environmental officers to record day-to-day physical logbooks even during heavy machine learning batch re-training cycles.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 11: CHAPTER 2: LITERATURE REVIEW (Body Page 5)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 2: LITERATURE REVIEW</b>", chapter_style))
-    story.append(Paragraph("<b>2.1 Clinical and Environmental Diagnostic Paradigms for Carbon Monitoring</b>", h1_style))
-    story.append(Paragraph(
-        "Carbon footprint monitoring and accounting has traditionally relied on retrospective corporate sustainability disclosures and manual periodic compilation of utility bills [14]. Under the universally recognized <b>Greenhouse Gas Protocol (GHG Protocol) Corporate Accounting and Reporting Standard</b> developed by the World Resources Institute (WRI) and the World Business Council for Sustainable Development (WBCSD), organizational emissions are categorized into three operational scopes [15]. Scope 1 represents direct greenhouse gas emissions resulting from fuel combustion in stationary boilers, backup generators, and organization-owned transport vehicles. Scope 2 accounts for indirect emissions associated with the generation of purchased electricity consumed by the reporting entity. Scope 3 encompasses all other indirect supply chain and logistical emissions, including employee commuting, business air travel, and third-party waste treatment [16]. Numerous industrial investigations have confirmed that rigorous carbon accounting requires systematic multi-scope coverage to prevent carbon leakage and under-reporting [17].",
-        body_style
-    ))
-    story.append(Paragraph(
-        "However, visual inspection and manual bookkeeping of utility bills is plagued by severe operational constraints. Intracranial or industrial time-series generate vast data volumes, and intermittent peak demand events frequently mimic routine baseline variations [18]. Furthermore, manual emission calculation protocols exhibit notable inter-rater variability, with discrepancy rates between independent carbon auditors frequently exceeding 20% to 25% due to conflicting emission factor selections [19]. Consequently, computerized quantitative software platforms have become indispensable instruments to objectively track industrial emissions.",
-        body_style
-    ))
-    story.append(Paragraph("<b>2.2 Functional Activity and Energy Network Analysis</b>", h1_style))
-    story.append(Paragraph(
-        "Traditional environmental analysis predominantly treated individual utility meters as isolated univariate time-series. In contrast, modern computational sustainability conceptualizes large industrial complexes as complex, interconnected dynamic networks [20]. Industrial facilities operate as distributed operational systems where electrical distribution, compressed air systems, chilled water loops, and fuel supply networks exhibit strong mutual statistical dependencies [21]. During transitions between standby states and peak operational regimes, multi-feeder power networks enter states of intense synchronized demand.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "To model these complex multi-channel interactions, researchers construct functional dependency networks where nodes represent physical substations or utility meters, and edges quantify statistical correlations between time-series [7]. Early methods utilized linear Pearson cross-correlation. However, these metrics are severely distorted by global baseline shifts and environmental diurnal temperature cycles [8]. To circumvent these obstacles, advanced phase synchronization and mutual information metrics have been formulated, isolating genuine operational phase locking from background thermal noise [9].",
-        body_style
-    ))
-    story.append(Paragraph("<b>2.3 Machine Learning Applications in Industrial Forecasting</b>", h1_style))
-    story.append(Paragraph(
-        "While functional network analysis captures pairwise interactions across spatial channels, it treats individual signals in a purely statistical domain [11]. Cerebral and industrial dynamics are intrinsically non-linear, multi-variate, and state-dependent [11]. Continuous sensor time-series represent lower-dimensional projections of an underlying multi-dimensional state space. Supervised machine learning algorithms—including Ordinary Least Squares (OLS), Ridge Regression, Random Forests, Gradient Boosted Decision Trees, and Support Vector Machines—have demonstrated exceptional efficacy in capturing non-linear relationships between meteorological variables (temperature, humidity), operational activity levels (fuel, distance, appliance run-time), and resultant greenhouse gas emissions [1].",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 12: CHAPTER 2 (Body Page 6)
-    # =========================================================================
-    story.append(Paragraph("<b>2.4 Deep Learning and Predictive Architectures in Environmental Systems</b>", h1_style))
-    story.append(Paragraph(
-        "With the recent revolution in machine learning, deep neural networks have been widely applied to automated environmental forecasting and load prediction [17]. Convolutional Neural Networks (CNNs) have achieved notable success in 2D spatial feature extraction from gridded weather data for renewable generation forecasting [18]. However, industrial carbon footprint prediction presents an entirely distinct computational challenge: rather than detecting whether an anomaly occurs in time, the algorithm must predict the continuous, multi-variable scalar emission output generated across multi-modal energy, transport, and waste features [17].",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Standard feed-forward regression architectures and classical supervised learners (such as Linear Regression, Ridge Regressors, and Decision Tree ensembles) evaluate each operational record as an independent observation [1]. In complex scientific and industrial installations, energy consumption is an inherently dynamic, multi-modal process. Operations begin with auxiliary equipment pre-chilling, transition into high-intensity propulsion testing, and conclude with post-firing nitrogen purges and waste neutralization [6]. Recurrent Neural Networks (RNNs) and gated architectures—specifically Long Short-Term Memory (LSTM) and Gated Recurrent Units (GRUs)—are uniquely qualified to model such time-evolving trajectories across consecutive operational windows [15].",
-        body_style
-    ))
-    story.append(Paragraph("<b>2.5 Limitations of Existing Approaches and Baseline Performance Gap</b>", h1_style))
-    story.append(Paragraph(
-        "In our preliminary system evaluation, we investigated existing commercial carbon management platforms (e.g., Watershed, Persefoni, SAP Sustainability Footprint Management) alongside academic regression pipelines proposed in recent literature [1]. While theoretical models report high predictive accuracy, our empirical investigation on raw industrial datasets revealed four critical vulnerabilities that limit real-world deployment:",
-        body_style
-    ))
-    story.append(Paragraph("<b>1. Memoryless Static Assumptions:</b> Traditional tools evaluate monthly snapshots in total isolation. They possess zero recurrent memory to track whether an energy spike was an isolated transient or the initiation of a sustained operational test sequence.", bullet_style))
-    story.append(Paragraph("<b>2. Feature Standardization Ambiguity:</b> Academic datasets commonly standardize input features into zero-mean, unit-variance Z-scores. Existing commercial tools lack protective validation rules, frequently attempting to multiply negative standardized values by physical emission factors.", bullet_style))
-    story.append(Paragraph("<b>3. Inflexible Schema Ingestion:</b> Proprietary tools enforce rigid, vendor-specific column structures. Uploading third-party spreadsheets with variant column naming conventions causes catastrophic ingestion failures without actionable diagnostic feedback.", bullet_style))
-    story.append(Paragraph("<b>4. Closed-Source Air-Gapping Incompatibility:</b> Commercial SaaS platforms require transmitting facility telemetry to third-party multi-tenant clouds, directly violating the strict security and air-gapping mandates enforced across national defense and aerospace establishments.", bullet_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 13: CHAPTER 2 (Body Page 7)
-    # =========================================================================
-    story.append(Paragraph("<b>2.6 Identification of Research Gap & Rationale for Hybrid Architecture</b>", h1_style))
-    story.append(Paragraph(
-        "The empirical findings of the preliminary review phase clearly identified the critical research gap: automated industrial carbon management cannot rely solely on static spreadsheet accounting or black-box SaaS tools. To achieve the high fidelity, auditability, and operational security required by facilities like IPRC Mahendragiri, a computational architecture must explicitly integrate three synchronized capabilities:",
-        body_style
-    ))
-    story.append(Paragraph("&bull; <b>Dual Analytical Paradigms:</b> Seamlessly unifying longitudinal research dataset analysis (Mode A) with granular, factor-based physical activity logging across Scopes 1, 2, and 3 (Mode B).", bullet_style))
-    story.append(Paragraph("&bull; <b>Invariant Feature Protection:</b> Guaranteeing that standardized Z-score input features are strictly utilized for statistical correlation and machine learning regressors, while physical factors are reserved exclusively for unstandardized quantities.", bullet_style))
-    story.append(Paragraph("&bull; <b>Decoupled On-Premise Microservices:</b> Hosting the analytical frontend, core API gateway, relational database, and machine learning engine across distinct services capable of air-gapped on-premise execution.", bullet_style))
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>Table 2.1: Methodological Comparison of Carbon Accounting Approaches [1, 10, 17, 18]</b>", h2_style))
-    comp_headers = [Paragraph("<b>Author & Year</b>", table_header), Paragraph("<b>Modality & Dataset</b>", table_header), Paragraph("<b>Methodology / Pipeline</b>", table_header), Paragraph("<b>Reported Performance</b>", table_header), Paragraph("<b>Key Limitations</b>", table_header), Paragraph("<b>Findings in Our Research</b>", table_header)]
-    comp_rows = [
-        comp_headers,
-        [Paragraph("Fang et al. (2024) [1]", table_cell_bold), Paragraph("SEEG Telemetry (22 pts, >2500 contacts)", table_cell), Paragraph("WPLI (ENCS) + Persistence Entropy + SVM", table_cell), Paragraph("94.40% AC, 98.48% P, 96.97% AUC", table_cell), Paragraph("Memoryless static SVM; ignores temporal propagation", table_cell), Paragraph("Replicated: 72.21% AC (SVM); adding Bi-GRU sequence model achieves 98.66% AC", table_cell)],
-        [Paragraph("Koutsouvelis et al. (2026) [17]", table_cell_bold), Paragraph("MRI / PET / ECoG (36 studies)", table_cell), Paragraph("Systematic Review of Deep Learning in EZ", table_cell), Paragraph("Macro detection rates 74%–79% in FCD lesions", table_cell), Paragraph("High risk of bias (~67%), small single-center cohorts", table_cell), Paragraph("Multi-lead SEEG with deep recurrent networks provides objective channel-level mapping", table_cell)],
-        [Paragraph("Ein Shoka et al. (2023) [18]", table_cell_bold), Paragraph("Scalp & Intracranial EEG Telemetry", table_cell), Paragraph("CNN with encrypted telemetry signals", table_cell), Paragraph(">97%–99% classification accuracy", table_cell), Paragraph("Focuses on temporal detection, not spatial localization", table_cell), Paragraph("Demonstrated that spatial SOZ localization requires recurrent sequential dynamics", table_cell)],
-        [Paragraph("van Mierlo et al. (2014) [10]", table_cell_bold), Paragraph("Intracranial EEG (17 clinical patients)", table_cell), Paragraph("Functional connectivity directed phase lag index", table_cell), Paragraph("High concordance with surgical resection", table_cell), Paragraph("Linear connectivity only; ignores nonlinear phase space", table_cell), Paragraph("Proved that combining connectivity with topological entropy resolves ambiguous hubs", table_cell)],
-        [Paragraph("Proposed Endsem (2026)", table_cell_bold), Paragraph("SEEG (ds004100, 22 pts, >2500 contacts)", table_cell), Paragraph("WPLI (ENCS) + Vietoris-Rips PE + Event-Aligned Bi-GRU", table_cell), Paragraph("98.66% AC, 98.09% P, 99.36% R, 98.91% AUC", table_cell), Paragraph("Requires invasive surgical depth electrode telemetry", table_cell), Paragraph("Recurrent temporal modeling completely bridges the static gap, eliminating false negatives", table_cell)]
-    ]
-    t_comp = Table(comp_rows, colWidths=[65, 80, 85, 80, 85, 85])
-    t_comp.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
-        ('LEFTPADDING', (0,0), (-1,-1), 3),
-        ('RIGHTPADDING', (0,0), (-1,-1), 3),
-    ]))
-    story.append(t_comp)
-    story.append(Spacer(1, 4))
-    story.append(Paragraph("<b>2.7 Literature Comparison Summary</b>", h1_style))
-    story.append(Paragraph(
-        "Table 2.1 summarizes the architectural and performance comparison between prominent peer-reviewed studies in automated lesion localization and our proposed end-semester framework. The synthesis confirms that incorporating recurrent sequential dynamics and high-resolution event alignment decisively outperforms static classifiers.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 14: CHAPTER 3: DATASET AND PREPROCESSING (Body Page 8)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 3: DATASET AND PREPROCESSING</b>", chapter_style))
-    story.append(Paragraph("<b>3.1 OpenNeuro ds004100 (HUP-iEEG) Surgical Cohort</b>", h1_style))
-    story.append(Paragraph(
-        "To evaluate our computational methodologies on authentic, high-fidelity clinical telemetry, this research utilizes the public Hospital of the University of Pennsylvania Intracranial EEG (HUP-iEEG) surgical cohort, curated and distributed under OpenNeuro accession ds004100 (Version 1.1.3) [19]. The dataset contains multi-day continuous intracranial electroencephalography recordings acquired from patients undergoing Phase II presurgical evaluation for medically refractory focal epilepsy at the Penn Epilepsy Center. In strict accordance with the benchmark cohort evaluated by Fang et al. (2024) [1], our study includes all 22 human subjects designated as the complete surgical cohort.",
-        body_style
-    ))
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>Table 3.1: OpenNeuro ds004100 Surgical Cohort Clinical Demographics [1, 19]</b>", h2_style))
-    demo_headers = [Paragraph("<b>Surgical Target</b>", table_header), Paragraph("<b>Patient Count</b>", table_header), Paragraph("<b>Subject IDs Included</b>", table_header), Paragraph("<b>Channels Range</b>", table_header), Paragraph("<b>Mean SOZ Contacts</b>", table_header), Paragraph("<b>Total Resection Contacts</b>", table_header)]
-    demo_rows = [
-        demo_headers,
-        [Paragraph("Medial Temporal Lobe (MTL)", table_cell_bold), Paragraph("8 Patients", table_cell), Paragraph("HUP133, HUP138, HUP142, HUP157, HUP162, HUP164, HUP185, HUP190", table_cell), Paragraph("77 – 176 Contacts", table_cell), Paragraph("8.9 Contacts", table_cell), Paragraph("71 Ground-Truth SOZ", table_cell)],
-        [Paragraph("Temporal Neocortex (TEMPORAL)", table_cell_bold), Paragraph("6 Patients", table_cell), Paragraph("HUP117, HUP144, HUP160, HUP166, HUP173, HUP181", table_cell), Paragraph("49 – 164 Contacts", table_cell), Paragraph("9.0 Contacts", table_cell), Paragraph("54 Ground-Truth SOZ", table_cell)],
-        [Paragraph("Frontal Lobe (FRONTAL)", table_cell_bold), Paragraph("4 Patients", table_cell), Paragraph("HUP171, HUP172, HUP180, HUP188", table_cell), Paragraph("111 – 161 Contacts", table_cell), Paragraph("12.3 Contacts", table_cell), Paragraph("49 Ground-Truth SOZ", table_cell)],
-        [Paragraph("Medial Frontal Lobe (MFL)", table_cell_bold), Paragraph("2 Patients", table_cell), Paragraph("HUP130, HUP151", table_cell), Paragraph("120 – 172 Contacts", table_cell), Paragraph("2.5 Contacts", table_cell), Paragraph("5 Ground-Truth SOZ", table_cell)],
-        [Paragraph("Insular Cortex (INSULAR)", table_cell_bold), Paragraph("1 Patient", table_cell), Paragraph("HUP150", table_cell), Paragraph("89 Contacts", table_cell), Paragraph("8.0 Contacts", table_cell), Paragraph("8 Ground-Truth SOZ", table_cell)],
-        [Paragraph("Total Cohort Benchmark", table_cell_bold), Paragraph("22 Patients", table_cell), Paragraph("sub-HUP117 to sub-HUP190 (Complete Surgical Cohort)", table_cell), Paragraph("49 – 176 Contacts", table_cell), Paragraph("8.8 Contacts / Patient", table_cell), Paragraph("187 Validated SOZ Contacts", table_cell)]
-    ]
-    t_demo = Table(demo_rows, colWidths=[80, 50, 160, 60, 60, 70])
-    t_demo.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-        ('LEFTPADDING', (0,0), (-1,-1), 2),
-        ('RIGHTPADDING', (0,0), (-1,-1), 2),
-    ]))
-    story.append(t_demo)
+    story.append(Paragraph('ON', st['cover_on']))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph('IPRC CARBONTRACK: CARBON FOOTPRINT MONITORING<br/>AND PREDICTIVE ANALYTICS PLATFORM', st['cover_proj']))
     story.append(Spacer(1, 6))
+    story.append(Paragraph('(A Dual-Mode Greenhouse Gas Accounting and Machine Learning Regression System \u2014 RES-IPRC-2025-003)', st['cover_sub']))
+    story.append(Spacer(1, 42))
 
-    story.append(Paragraph("<b>3.2 Clinical Subject Demographics and Anatomical Targets</b>", h1_style))
-    story.append(Paragraph(
-        "The 22 patients in the cohort represent a diverse spectrum of focal epilepsy etiologies and surgical resection targets. As documented in Table 3.1, the cohort encompasses five primary anatomical targets: Medial Temporal Lobe (8 subjects), Temporal Neocortex (6 subjects), Frontal Lobe (4 subjects), Medial Frontal Lobe (2 subjects), and Insular Cortex (1 subject). Each patient underwent surgical intervention consisting of open craniotomy with surgical resection, tailored anterior temporal lobectomy (ATL), or selective laser interstitial thermal therapy (LITT). Postoperative follow-up across the cohort demonstrated favorable seizure outcomes (Engel Class I or II) in patients whose surgical margins fully encompassed the localized SOZ.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 15: CHAPTER 3 (Body Page 9)
-    # =========================================================================
-    story.append(Paragraph("<b>3.3 Ground-Truth Seizure Onset Zone (SOZ) Delineation</b>", h1_style))
-    story.append(Paragraph(
-        "Establishing unimpeachable clinical ground truth is essential for validating automated machine learning algorithms. In the ds004100 dataset, ground-truth channel labels were established by a consensus panel of board-certified clinical epileptologists and neurosurgeons at the Penn Epilepsy Center through comprehensive visual analysis of multiple ictal recordings, ictal SPECT co-registered to MRI (SISCOM), and postoperative high-resolution MRI scans documenting the surgical resection cavity [19]. The metadata specifies two primary channel categories: (1) SOZ Channels (Positive Class, Label = 1) exhibiting the earliest electrographic seizure onset activity (averaging 8.8 contacts per patient); and (2) Non-SOZ Channels (Negative Class, Label = 0) situated outside the onset zone, ranging from 42 to 167 contacts per subject.",
-        body_style
-    ))
-    story.append(Paragraph("<b>3.4 Multi-Lead Electrode Density and BIDS Data Architecture</b>", h1_style))
-    story.append(Paragraph(
-        "All data are structured according to the international Brain Imaging Data Structure (BIDS) standard for intracranial EEG [19]. The total intracranial electrode count per patient ranges from 49 channels (sub-HUP117) to 176 channels (sub-HUP164), yielding an aggregate cohort total of over 2,500 individual electrode contacts across more than 250 implanted multi-lead depth shafts. Each subject directory incorporates multi-channel European Data Format (.edf) recordings, channel metadata (.tsv), stereotactic coordinates (.tsv), and clinical event onset markers (.tsv).",
-        body_style
-    ))
-    story.append(Spacer(1, 4))
-    story.append(Image(os.path.join(FIG_DIR, 'fig2_signals.png'), width=480, height=190))
-    story.append(Paragraph("<i>Fig. 2: Raw vs. Preprocessed SEEG Signals (CAR, Downsampling, Filtering) [20]</i>", fig_cap_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 16: CHAPTER 3 (Body Page 10)
-    # =========================================================================
-    story.append(Image(os.path.join(FIG_DIR, 'fig3_psd.png'), width=480, height=170))
-    story.append(Paragraph("<i>Fig. 3: Multi-Band Power Spectral Density & Frequency Decomposition [20]</i>", fig_cap_style))
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>3.5 SEEG Signal Preprocessing Pipeline</b>", h1_style))
-    story.append(Paragraph(
-        "Raw intracranial electrophysiological recordings contain extraneous non-cerebral artifacts, including high-frequency amplifier noise, 60 Hz powerline hum, broken or floating electrode leads, and global baseline shifts. To extract clean, high-fidelity neural oscillations, we developed a rigorous, multi-stage automated signal preprocessing pipeline implemented in Python utilizing the MNE-Python library [20]. The workflow executes six sequential operations:",
-        body_style
-    ))
-    story.append(Paragraph("<b>3.5.1 Bad Channel Identification and Rejection:</b> The pipeline reads channels.tsv metadata to identify channels flagged with status='bad'. Channels demonstrating extreme impedance, mechanical breakage, persistent clipping, or electrode pop artifacts are permanently discarded.", bullet_style))
-    story.append(Paragraph("<b>3.5.2 Spatial Re-referencing (Common Average Reference - CAR):</b> Raw SEEG data are recorded using a distant reference electrode. To eliminate shared environmental noise, Common Average Reference (CAR) is applied across all good channels by subtracting the spatial mean potential.", bullet_style))
-    story.append(Paragraph("<b>3.5.3 Temporal Downsampling and Anti-Aliasing:</b> Native recordings sampled at 512 Hz or 1024 Hz are downsampled to a standardized 200 Hz sampling frequency using Fourier-method band-limited resampling to optimize computational tractability.", bullet_style))
-    story.append(Paragraph("<b>3.5.4 Notch Filtering:</b> To eliminate electrical powerline hum and alternating current interference, an infinite impulse response (IIR) notch filter is applied at 60 Hz with a quality factor Q = 30.", bullet_style))
-    story.append(Paragraph("<b>3.5.5 Wideband Frequency Filtering:</b> A 4th-order zero-phase Butterworth bandpass filter is deployed between 0.5 Hz and 80 Hz. Bidirectional filtering ensures zero phase distortion and preserves exact temporal synchronization.", bullet_style))
-    story.append(Paragraph("<b>3.5.6 Gamma-Band (30–60 Hz) Isolation:</b> Neurophysiological investigations have established that focal seizure onsets are predominantly mediated by synchronized oscillations in the gamma band (30–60 Hz). Consequently, signals are filtered into the 30–60 Hz band for functional network extraction.", bullet_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 17: CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY (Body Page 11)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY</b>", chapter_style))
-    story.append(Paragraph("<b>4.1 End-to-End System Architecture</b>", h1_style))
-    story.append(Paragraph(
-        "The proposed computational system operates as an end-to-end, multi-stage machine learning pipeline designed to intake multi-channel SEEG recordings and output channel-level probability predictions of epileptogenicity. The architecture synthesizes two complementary paradigms of neurocomputational analysis: (1) Dynamic Functional Brain Network Connectivity, and (2) Nonlinear Topological Data Analysis (TDA), coupled with a Deep Recurrent Sequence Model for temporal trajectory decoding. As depicted in Figure 4.1, the pipeline executes five core stages: raw SEEG ingestion and preprocessing, temporal window segmentation, dual-branch feature extraction, feature fusion and imbalance mitigation, and sequential classification with clinical mapping.",
-        body_style
-    ))
-    story.append(Paragraph("<b>4.2 Branch 1: Dynamic Functional Brain Network (WPLI & ENCS)</b>", h1_style))
-    story.append(Paragraph(
-        "Branch 1 models the brain as an interconnected functional graph. For every temporal window, pairwise synchronization between all valid electrode channels is quantified using the Weighted Phase Lag Index (WPLI) [9]. Unlike cross-correlation or phase-locking values, WPLI measures non-zero phase differences weighted by the magnitude of the imaginary component of the cross-spectrum, rendering it robust against zero-lag volume conduction artifacts. The resulting N x N symmetric matrix contains continuous edge weights bounded in [0, 1]. A 50% Proportional Thresholding operation is applied, retaining the top 50% highest edge weights to form binary adjacency matrix A. From this graph, Epileptic Network Connectivity Strength (ENCS) is computed as unweighted node degree: ENCS(i) = sum_j A_ij. Electrodes situated in the seizure onset zone act as intense network hubs with significantly elevated ENCS values.",
-        body_style
-    ))
-    story.append(Spacer(1, 4))
-    story.append(Image(os.path.join(FIG_DIR, 'fig4_network.png'), width=480, height=190))
-    story.append(Paragraph("<i>Fig. 4: Functional Brain Network Analysis: WPLI Matrix & Binarized Graph [1, 9]</i>", fig_cap_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 18: CHAPTER 4 (Body Page 12)
-    # =========================================================================
-    story.append(Image(os.path.join(FIG_DIR, 'fig5_distribution.png'), width=460, height=170))
-    story.append(Paragraph("<i>Fig. 5: Distribution of Epileptic Network Connectivity Strength (ENCS) [1]</i>", fig_cap_style))
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>4.3 Branch 2: Nonlinear Topological Data Analysis (TDA)</b>", h1_style))
-    story.append(Paragraph(
-        "Branch 2 characterizes the nonlinear dynamical geometry of individual electrode time-series. According to dynamical systems theory, the complex electrophysiological signal observed at a single contact reflects the trajectory of a multi-dimensional chaotic attractor. To reconstruct this hidden state space, Takens Delay Coordinate Embedding is deployed with optimal parameters selected via information-theoretic criteria: embedding delay tau = 28 (selected at the first minimum of the Average Mutual Information function) and embedding dimension m = 4 (selected via the False Nearest Neighbors criterion) [1]. Each time-series is thus mapped into a point cloud residing in R^4. Vietoris-Rips simplicial filtration is performed using the Ripser library [21] to track birth-death intervals across homology dimensions H0, H1, and H2. From normalized feature lifespans, Shannon Persistence Entropy (PE) is computed, quantifying attractor geometric complexity collapse during seizure transitions.",
-        body_style
-    ))
-    story.append(Paragraph("<b>4.4 Temporal Window Segmentation Strategies</b>", h1_style))
-    story.append(Paragraph(
-        "To systematically investigate how temporal resolution affects classification fidelity, we engineered and benchmarked four distinct temporal window segmentation strategies across the cohort:",
-        body_style
-    ))
-    story.append(Paragraph("&bull; <b>Strategy A (Paper Baseline Sliding Window):</b> 30.0-second window length with a 25.0-second window shift (5.0s overlap), representing the broad windowing strategy of Fang et al. (2024).", bullet_style))
-    story.append(Paragraph("&bull; <b>Strategy B (Intermediate Window):</b> 10.0-second window length with a 5.0-second window shift (5.0s overlap), doubling temporal resolution.", bullet_style))
-    story.append(Paragraph("&bull; <b>Strategy C (Micro-Window):</b> 5.0-second window length with a 2.5-second window shift (2.5s overlap), testing fine-grained granularity.", bullet_style))
-    story.append(Paragraph("&bull; <b>Strategy D (Proposed Seizure-Centric Event-Aligned Micro-Windows):</b> A targeted 10.0-second micro-window with 5.0s shift centered strictly around the clinical electrographic onset timestamp (t_onset), concentrating feature extraction on critical pre-ictal-to-ictal dynamical transitions.", bullet_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 19: CHAPTER 4 (Body Page 13)
-    # =========================================================================
-    story.append(Image(os.path.join(FIG_DIR, 'fig6_tda.png'), width=480, height=155))
-    story.append(Paragraph("<i>Fig. 6: TDA Pipeline: Takens Attractor, Persistence Diagram & Barcode [11, 14, 21]</i>", fig_cap_style))
-
-    story.append(Paragraph("<b>4.5 Multimodal Feature Fusion and Imbalance Handling</b>", h1_style))
-    story.append(Paragraph(
-        "For each electrode contact in a given temporal window, the pipeline extracts a multimodal feature representation: (1) ENCS Mode (1D: [ENCS]); and (2) ENCS + PE Mode (5D: [ENCS, PE_H0, PE_H1, PE_H2, PE_total]). To resolve extreme class imbalance (~2% to 6% positive SOZ contacts), we implemented two synergistic strategies: (a) 5x Focal Window Oversampling, sampling SOZ channels across 5 overlapping slices per epoch to rebalance training folds to a 1:1 ratio; and (b) Strict In-Fold Standardization, fitting Scalers and PCA strictly on training subsets to prevent data leakage.",
-        body_style
-    ))
-    story.append(Spacer(1, 2))
-    story.append(Image(os.path.join(FIG_DIR, 'fig7_architecture.png'), width=480, height=140))
-    story.append(Paragraph("<i>Fig. 7: End-to-End Pipeline Architecture of Proposed Bi-GRU Framework</i>", fig_cap_style))
-
-    story.append(Paragraph("<b>4.6 Classification Frameworks</b>", h1_style))
-    story.append(Paragraph(
-        "<b>4.6.1 Baseline Model: Support Vector Machine (RBF-SVM):</b> Formulated by Fang et al. (2024), the baseline classifier comprises an RBF-kernel SVM (penalty parameter C = 0.5) applied to PCA-reduced standardized features with Platt scaling.<br/>"
-        "<b>4.6.2 Endsem Proposed Model: Bidirectional Gated Recurrent Unit (Bi-GRU):</b> To capture continuous temporal evolution, we designed a deep sequential neural network based on a Bi-GRU. Channels across T micro-windows are organized into 3D sequence tensors (N_channels x T_windows x D_features).",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 20: CHAPTER 4 (Body Page 14)
-    # =========================================================================
-    story.append(Paragraph("<b>Deep Recurrent Architecture Specifications</b>", h1_style))
-    story.append(Paragraph("The complete Bi-GRU architecture consists of:", body_style))
-    story.append(Paragraph("&bull; <b>Bidirectional GRU Layer:</b> input_dim = 5, hidden_dim = 16, processing sequences simultaneously in both forward and backward temporal directions.", bullet_style))
-    story.append(Paragraph("&bull; <b>Global Temporal Mean Pooling:</b> Hidden states across all T temporal micro-windows are averaged to extract a robust, fixed-length temporal summary vector.", bullet_style))
-    story.append(Paragraph("&bull; <b>Multi-Layer Perceptron (MLP) Head:</b> Linear(32 -> 16) -> ReLU -> Dropout(p = 0.2) -> Linear(16 -> 1), projecting to unnormalized scalar logits.", bullet_style))
-    story.append(Paragraph("&bull; <b>Class-Weighted Focal Cross-Entropy Loss:</b> Loss is weighted dynamically by w_pos = N_neg / N_pos to heavily penalize false-negative omissions.", bullet_style))
-    story.append(Paragraph("&bull; <b>Training Protocol:</b> Adam optimizer (learning rate = 0.01, weight decay = 1e-3), trained for 80 epochs per fold.", bullet_style))
-
-    story.append(Paragraph("<b>4.7 End-to-End Algorithmic Procedure</b>", h1_style))
-    story.append(Paragraph(
-        "The complete execution logic of the proposed system is formalized in the algorithmic pseudocode below:",
-        body_style
-    ))
-
-    pseudo_text = (
-        "<b>Algorithm 1: End-to-End Dynamic Functional Network & Topological Recurrent Framework</b><br/>"
-        "<b>Input:</b> Raw multi-channel SEEG telemetry X(t), bad channel list, events.tsv onset timestamp t_onset<br/>"
-        "<b>Output:</b> Channel-level SOZ probability P(SOZ_i) and binary resection mask<br/>"
-        "1: Reject bad channels; Apply Common Average Reference (CAR): X_tilde(t) = X(t) - mean(X(t))<br/>"
-        "2: Downsample to f_s = 200 Hz; Apply 60 Hz notch filter and 30-60 Hz gamma bandpass filter<br/>"
-        "3: Segment continuous telemetry into T event-aligned micro-windows (W = 10s, S = 5s) centered on t_onset<br/>"
-        "4: <b>for</b> each micro-window t = 1 to T <b>do</b><br/>"
-        "5: &nbsp;&nbsp;&nbsp;&nbsp;Compute cross-spectral density S_ij(t) and extract WPLI connectivity matrix W(t)<br/>"
-        "6: &nbsp;&nbsp;&nbsp;&nbsp;Apply 50% proportional thresholding to obtain binary adjacency matrix A(t)<br/>"
-        "7: &nbsp;&nbsp;&nbsp;&nbsp;Extract node degree: ENCS_i(t) = sum_j A_ij(t)<br/>"
-        "8: &nbsp;&nbsp;&nbsp;&nbsp;<b>for</b> each electrode channel i = 1 to N <b>do</b><br/>"
-        "9: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Reconstruct attractor via Takens embedding (tau = 28, m = 4)<br/>"
-        "10: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Construct Vietoris-Rips simplicial filtration; track birth-death pairs for H0, H1, H2<br/>"
-        "11: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Compute Shannon Persistence Entropy PE_H0, PE_H1, PE_H2, and PE_total<br/>"
-        "12: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assemble multimodal feature vector: f_i(t) = [ENCS, PE_H0, PE_H1, PE_H2, PE_total]<br/>"
-        "13: &nbsp;&nbsp;&nbsp;&nbsp;<b>end for</b><br/>"
-        "14: <b>end for</b><br/>"
-        "15: Standardize features in-fold; construct 3D sequence tensor (N x T x 5)<br/>"
-        "16: Forward propagate through Bidirectional GRU: h_t^Bi = [h_t^forward || h_t^backward]<br/>"
-        "17: Global temporal mean pooling: h_pooled = (1/T) * sum_t h_t^Bi<br/>"
-        "18: Compute logit y_hat via MLP head; calculate calibrated probability P(SOZ_i) = sigmoid(y_hat)<br/>"
-        "19: Apply Youden's J optimal threshold to output binary clinical resection report."
-    )
-    t_pseudo = Table([[Paragraph(pseudo_text, ParagraphStyle('PsCode', fontName='Courier', fontSize=7, leading=9.5))]], colWidths=[480])
-    t_pseudo.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#cbd5e1')),
-        ('TOPPADDING', (0,0), (-1,-1), 6),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('LEFTPADDING', (0,0), (-1,-1), 8),
-        ('RIGHTPADDING', (0,0), (-1,-1), 8),
-    ]))
-    story.append(t_pseudo)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 21: CHAPTER 5: MATHEMATICAL FORMULATION (Body Page 15)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 5: MATHEMATICAL FORMULATION</b>", chapter_style))
-    story.append(Paragraph("<b>5.1 Preprocessing and Analytic Signal Representation</b>", h1_style))
-    story.append(Paragraph(
-        "Let a multi-channel SEEG recording comprising N physical electrode channels over continuous time t be denoted as X(t) = [x_1(t), x_2(t), ..., x_N(t)]^T. Following bad channel rejection, Common Average Referencing (CAR) transforms each raw channel x_i(t) by subtracting the spatial mean of all valid channels:",
-        body_style
-    ))
-    story.append(Paragraph("<b>x_tilde_i(t) = x_i(t) - (1/N) &sum;_{k=1}^N x_k(t) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(1)</b>", ParagraphStyle('Eq1', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph(
-        "The re-referenced signal is downsampled to f_s = 200 Hz and passed through a 4th-order zero-phase Butterworth bandpass filter configured between f_L = 30 Hz and f_H = 60 Hz to isolate gamma-band oscillations. The continuous-time frequency response of an n-th order Butterworth filter is given by:",
-        body_style
-    ))
-    story.append(Paragraph("<b>|H(j&omega;)|&sup2; = 1 / [1 + (&omega;&sup2; - &omega;_0&sup2; / (&omega; &bull; BW))^(2n)] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(2)</b>", ParagraphStyle('Eq2', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph(
-        "where &omega;_0 = &radic;(&omega;_L &bull; &omega;_H) denotes the center frequency and BW = &omega;_H - &omega;_L denotes the passband bandwidth. To compute instantaneous phase and amplitude without negative-frequency interference, the real-valued signal x_i(t) is converted into its complex analytic signal z_i(t) via the Hilbert transform H[x_i(t)]:",
-        body_style
-    ))
-    story.append(Paragraph("<b>z_i(t) = x_i(t) + j H[x_i(t)] = A_i(t) e^(j &theta;_i(t)) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(3)</b>", ParagraphStyle('Eq3', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("where the Hilbert transform is defined by the Cauchy principal value integral:", body_style))
-    story.append(Paragraph("<b>H[x_i(t)] = (1/&pi;) p.v. &int;_{-&infin;}^{+&infin;} [x_i(&tau;) / (t - &tau;)] d&tau; &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(4)</b>", ParagraphStyle('Eq4', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The instantaneous amplitude A_i(t) and instantaneous phase &theta;_i(t) are extracted as:", body_style))
-    story.append(Paragraph("<b>A_i(t) = &radic;(x_i&sup2;(t) + H[x_i(t)]&sup2;), &nbsp;&nbsp;&nbsp;&theta;_i(t) = arctan(H[x_i(t)] / x_i(t)) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(5)</b>", ParagraphStyle('Eq5', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-
-    story.append(Paragraph("<b>5.2 Weighted Phase Lag Index (WPLI) Equations</b>", h1_style))
-    story.append(Paragraph("For any pair of electrode channels i and j, the instantaneous cross-spectral density S_ij(t) is computed as the product of the analytic signal of channel i and the complex conjugate of channel j:", body_style))
-    story.append(Paragraph("<b>S_ij(t) = z_i(t) z_j*(t) = A_i(t) A_j(t) e^(j (&theta;_i(t) - &theta;_j(t))) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(6)</b>", ParagraphStyle('Eq6', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The imaginary component of the cross-spectrum reflects the true non-zero phase lag between channels, entirely vanishing if channels are in-phase or anti-phase (0 or &pi; radians):", body_style))
-    story.append(Paragraph("<b>Im[S_ij(t)] = A_i(t) A_j(t) sin(&theta;_i(t) - &theta;_j(t)) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(7)</b>", ParagraphStyle('Eq7', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The Weighted Phase Lag Index (WPLI) scales the phase lag asymmetry by the magnitude of the imaginary cross-spectrum across all time samples in a window of length K:", body_style))
-    story.append(Paragraph("<b>WPLI_ij = |&sum;_{k=1}^K Im[S_ij(k)]| / &sum;_{k=1}^K |Im[S_ij(k)]| = |E[Im(S_ij)]| / E[|Im(S_ij)|] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(8)</b>", ParagraphStyle('Eq8', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The resulting functional connectivity matrix W is an N x N symmetric matrix with diagonal entries W_ii = 0 and off-diagonal entries bounded in [0, 1].", body_style))
-
-    story.append(Paragraph("<b>5.3 Proportional Network Binarization and ENCS</b>", h1_style))
-    story.append(Paragraph("To remove weak, spurious functional edges and retain only dominant synchronization backbones, a 50% proportional thresholding operator &Theta;_0.5 is applied. Let &gamma;_0.5 represent the 50th percentile (median) value of all off-diagonal entries in W. The binary adjacency matrix A is defined as:", body_style))
-    story.append(Paragraph("<b>A_ij = 1 if W_ij &ge; &gamma;_0.5 (i &ne; j), &nbsp;&nbsp;&nbsp;&nbsp;A_ij = 0 otherwise &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(9)</b>", ParagraphStyle('Eq9', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 22: CHAPTER 5 (Body Page 16)
-    # =========================================================================
-    story.append(Paragraph("The Epileptic Network Connectivity Strength (ENCS) for electrode contact i is mathematically defined as its unweighted node degree within the binarized graph:", body_style))
-    story.append(Paragraph("<b>ENCS_i = &sum;_{j=1, j&ne;i}^N A_ij &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(10)</b>", ParagraphStyle('Eq10', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-
-    story.append(Paragraph("<b>5.4 Takens Phase-Space Delay Embedding</b>", h1_style))
-    story.append(Paragraph("Given a scalar discrete time-series s_i = [x_i(1), x_i(2), ..., x_i(T)] from channel i, Takens' Delay Embedding Theorem reconstructs the high-dimensional phase-space trajectory by generating delay coordinate vectors v_i(n) in R^m:", body_style))
-    story.append(Paragraph("<b>v_i(n) = [x_i(n), x_i(n + &tau;), x_i(n + 2&tau;), ..., x_i(n + (m - 1)&tau;)]^T &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(11)</b>", ParagraphStyle('Eq11', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("where &tau; is the embedding delay and m is the embedding dimension. The optimal delay &tau; is selected using the first minimum of the Average Mutual Information (AMI):", body_style))
-    story.append(Paragraph("<b>&tau;* = argmin_&tau; ( &sum;_{x(t), x(t+&tau;)} P(x(t), x(t+&tau;)) log_2 [P(x(t), x(t+&tau;)) / (P(x(t)) P(x(t+&tau;)))] ) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(12)</b>", ParagraphStyle('Eq12', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The minimum embedding dimension m is determined using the False Nearest Neighbors (FNN) criterion, which evaluates when the percentage of false projections drops to zero:", body_style))
-    story.append(Paragraph("<b>|x(n + m&tau;) - x^NN(n + m&tau;)| / ||v(n) - v^NN(n)|| > R_tol &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(13)</b>", ParagraphStyle('Eq13', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("In this study, following rigorous empirical validation, parameters &tau; = 28 and m = 4 are established across all subjects [1].", body_style))
-
-    story.append(Paragraph("<b>5.5 Simplicial Complexes and Persistent Homology</b>", h1_style))
-    story.append(Paragraph("Let the embedded point cloud for channel i be denoted as P_i = {v_i(1), v_i(2), ..., v_i(M)} in R^4. The Vietoris-Rips simplicial complex VR(P_i, &epsilon;) at proximity scale &epsilon; &ge; 0 is the collection of all simplices whose pairwise Euclidean distances do not exceed &epsilon;:", body_style))
-    story.append(Paragraph("<b>VR(P_i, &epsilon;) = { &sigma; &sube; P_i | &forall; u, v &isin; &sigma;, ||u - v||_2 &le; &epsilon; } &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(14)</b>", ParagraphStyle('Eq14', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("As &epsilon; increases monotonically from 0 to &infin;, a nested filtration of simplicial complexes is formed: VR(P_i, &epsilon;_1) &sube; VR(P_i, &epsilon;_2) for &epsilon;_1 &le; &epsilon;_2. Persistent homology tracks topological features across the filtration. A k-dimensional topological hole is born at spatial scale b_p and dies (becomes filled or merges) at scale d_p. The persistence diagram D_k is the multiset of birth-death coordinate pairs:", body_style))
-    story.append(Paragraph("<b>D_k = { (b_p, d_p) | p = 1, 2, ..., M_k } &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(15)</b>", ParagraphStyle('Eq15', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-
-    story.append(Paragraph("<b>5.6 Shannon Persistence Entropy Formulation</b>", h1_style))
-    story.append(Paragraph("For each topological feature p in homology dimension k in {0, 1, 2}, its persistence lifespan is defined as:", body_style))
-    story.append(Paragraph("<b>&ell;_{k,p} = d_{k,p} - b_{k,p} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(16)</b>", ParagraphStyle('Eq16', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The cumulative persistence across all M_k features in dimension k is L_k = &sum;_{p=1}^{M_k} &ell;_{k,p}. The normalized lifespan probability P_{k,p} is given by:", body_style))
-    story.append(Paragraph("<b>P_{k,p} = &ell;_{k,p} / L_k = (d_{k,p} - b_{k,p}) / &sum;_{q=1}^{M_k} (d_{k,q} - b_{k,q}) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(17)</b>", ParagraphStyle('Eq17', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The Shannon Persistence Entropy (PE) for dimension k is mathematically formulated as:", body_style))
-    story.append(Paragraph("<b>PE_k = - &sum;_{p=1}^{M_k} P_{k,p} log_2(P_{k,p}) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(18)</b>", ParagraphStyle('Eq18', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 23: CHAPTER 5 (Body Page 17)
-    # =========================================================================
-    story.append(Paragraph("Total Persistence Entropy PE_total is computed by aggregating lifespans across all homology dimensions H0, H1, and H2. The multimodal feature vector f_i for contact i is:", body_style))
-    story.append(Paragraph("<b>f_i = [ENCS_i, PE_0(i), PE_1(i), PE_2(i), PE_total(i)]^T &isin; R^5 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(19)</b>", ParagraphStyle('Eq19', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-
-    story.append(Paragraph("<b>5.7 Gated Recurrent Unit (GRU) Forward Dynamics</b>", h1_style))
-    story.append(Paragraph("Let the sequence of feature vectors for electrode contact i across T consecutive temporal micro-windows be X_i = [f_i(1), f_i(2), ..., f_i(T)]. At temporal step t in {1, 2, ..., T}, the forward Gated Recurrent Unit (GRU) updates its internal hidden state h_t using a reset gate r_t and an update gate z_t:", body_style))
-    story.append(Paragraph("<b>r_t = &sigma;(W_xr x_t + W_hr h_{t-1} + b_r) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(20)</b>", ParagraphStyle('Eq20', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("<b>z_t = &sigma;(W_xz x_t + W_hz h_{t-1} + b_z) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(21)</b>", ParagraphStyle('Eq21', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("where &sigma;(v) = 1 / (1 + e^(-v)) denotes the element-wise sigmoid activation function. The candidate hidden state h_tilde_t is computed using hyperbolic tangent activation:", body_style))
-    story.append(Paragraph("<b>h_tilde_t = tanh(W_xh x_t + W_hh (r_t &odot; h_{t-1}) + b_h) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(22)</b>", ParagraphStyle('Eq22', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("where &odot; denotes the Hadamard (element-wise) product. The final hidden state h_t is a linear interpolation between the previous state and the candidate state:", body_style))
-    story.append(Paragraph("<b>h_t = (1 - z_t) &odot; h_{t-1} + z_t &odot; h_tilde_t &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(23)</b>", ParagraphStyle('Eq23', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-
-    story.append(Paragraph("<b>5.8 Bidirectional Temporal Pooling and Focal Loss</b>", h1_style))
-    story.append(Paragraph("To leverage both historical pre-ictal transitions and subsequent ictal propagation dynamics, the network deploys a Bidirectional GRU (Bi-GRU). The forward GRU processes the sequence from t=1 to T producing hidden states h_forward_t, while the backward GRU processes from t=T to 1 producing h_backward_t. The composite hidden state is formed by concatenation:", body_style))
-    story.append(Paragraph("<b>h_t^Bi = [h_forward_t || h_backward_t] &isin; R^(2 &bull; d_h) &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(24)</b>", ParagraphStyle('Eq24', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("Global Temporal Mean Pooling aggregates representations across all T micro-windows into a single sequence embedding:", body_style))
-    story.append(Paragraph("<b>h_pooled = (1/T) &sum;_{t=1}^T h_t^Bi &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(25)</b>", ParagraphStyle('Eq25', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The classification head computes the final unnormalized scalar logit y_hat via a two-layer Multi-Layer Perceptron (MLP) with dropout regularization:", body_style))
-    story.append(Paragraph("<b>y_hat = W_2 &bull; ReLU(W_1 h_pooled + b_1) + b_2 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(26)</b>", ParagraphStyle('Eq26', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(Paragraph("The predicted probability of channel i belonging to the Seizure Onset Zone is P(SOZ_i) = &sigma;(y_hat). To counteract clinical class imbalance, the network is trained using Class-Weighted Binary Cross-Entropy Loss with w_pos = N_neg / N_pos:", body_style))
-    story.append(Paragraph("<b>L(y_hat, y) = - [w_pos &bull; y &bull; log(&sigma;(y_hat)) + (1 - y) &bull; log(1 - &sigma;(y_hat))] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(27)</b>", ParagraphStyle('Eq27', fontName='Helvetica-Bold', fontSize=8, alignment=1)))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 24: CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION (Body Page 18)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION</b>", chapter_style))
-    story.append(Paragraph("<b>6.1 Experimental Protocol and Cross-Validation Scheme</b>", h1_style))
-    story.append(Paragraph(
-        "To evaluate the proposed computational architecture rigorously without introducing data leakage, an individualized 5-Fold Stratified Cross-Validation protocol was implemented independently for every patient across the 22-subject cohort. In each subject evaluation, the total extracted feature epochs were partitioned into five stratified folds such that the ratio of SOZ to non-SOZ channels was preserved identically across training (80%) and validation/testing (20%) partitions.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "All data preprocessing transformations—including StandardScaler normalization parameters (mean and variance) and Principal Component Analysis (PCA) projection matrices—were fitted strictly on the in-fold training subset and applied subsequently to the out-of-fold validation subset. Decision boundary thresholds were calibrated on the training fold ROC curve via Youden's J statistic (J = Sensitivity + Specificity - 1) to maximize classification balance.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Experiments were conducted on a high-performance workstation equipped with an Apple M-series Silicon architecture, utilizing PyTorch for deep recurrent neural network execution, Scikit-Learn for baseline SVM models, MNE-Python for raw SEEG data parsing, and Ripser for persistent homology computations. Across all runs, random seeds were fixed (RANDOM_STATE = 42) to ensure strict algorithmic reproducibility.",
-        body_style
-    ))
-    story.append(Paragraph("<b>6.2 Evaluation Metrics Definition</b>", h1_style))
-    story.append(Paragraph(
-        "Classification performance was quantitatively evaluated using five standard clinical machine learning metrics: Accuracy (AC), Precision (P, Positive Predictive Value), Recall (R, Sensitivity), F1-Score (harmonic mean of Precision and Recall), and Receiver Operating Characteristic Area Under Curve (ROC-AUC). In a surgical decision-support context, Recall holds paramount clinical significance: a false negative represents a missed epileptogenic contact, which inevitably causes postoperative seizure recurrence. The metrics are defined mathematically as follows:",
-        body_style
-    ))
-    story.append(Paragraph("&bull; <b>Accuracy (AC):</b> (TP + TN) / (TP + TN + FP + FN) * 100", bullet_style))
-    story.append(Paragraph("&bull; <b>Precision (P):</b> TP / (TP + FP) * 100", bullet_style))
-    story.append(Paragraph("&bull; <b>Recall / Sensitivity (R):</b> TP / (TP + FN) * 100", bullet_style))
-    story.append(Paragraph("&bull; <b>F1-Score:</b> 2 * (Precision * Recall) / (Precision + Recall) * 100", bullet_style))
-    story.append(Paragraph("&bull; <b>ROC-AUC:</b> Integral from 0 to 1 of True Positive Rate with respect to False Positive Rate, measuring threshold-independent discriminability.", bullet_style))
-    story.append(Paragraph("where TP, TN, FP, and FN denote True Positives, True Negatives, False Positives, and False Negatives, respectively.", body_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 25: CHAPTER 6 (Body Page 19)
-    # =========================================================================
-    story.append(Paragraph("<b>Table 6.1: Baseline SVM vs. Proposed Bi-GRU SOZ Localization Across 22 Cohort Patients [1, 15, 16]</b>", h2_style))
-    t61_headers = [Paragraph("<b>Patient ID</b>", table_header), Paragraph("<b>Target</b>", table_header), Paragraph("<b>Chann els</b>", table_header), Paragraph("<b>SOZ</b>", table_header), Paragraph("<b>SVM ENCS (%)</b>", table_header), Paragraph("<b>SVM ENCS+PE (%)</b>", table_header), Paragraph("<b>GRU ENCS (%)</b>", table_header), Paragraph("<b>Proposed GRU+PE (%)</b>", table_header), Paragraph("<b>Gain &Delta; (%)</b>", table_header)]
-    t61_rows = [
-        t61_headers,
-        [Paragraph("sub-HUP117", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("49", table_cell), Paragraph("7", table_cell), Paragraph("47.62", table_cell), Paragraph("70.24", table_cell), Paragraph("89.29", table_cell), Paragraph("97.62", table_cell), Paragraph("+27.38", table_cell)],
-        [Paragraph("sub-HUP130", table_cell), Paragraph("MFL", table_cell), Paragraph("120", table_cell), Paragraph("2", table_cell), Paragraph("66.53", table_cell), Paragraph("78.81", table_cell), Paragraph("99.15", table_cell), Paragraph("99.58", table_cell), Paragraph("+20.77", table_cell)],
-        [Paragraph("sub-HUP133", table_cell), Paragraph("MTL", table_cell), Paragraph("77", table_cell), Paragraph("5", table_cell), Paragraph("63.27", table_cell), Paragraph("69.39", table_cell), Paragraph("97.96", table_cell), Paragraph("98.64", table_cell), Paragraph("+29.25", table_cell)],
-        [Paragraph("sub-HUP138", table_cell), Paragraph("MTL", table_cell), Paragraph("102", table_cell), Paragraph("3", table_cell), Paragraph("72.22", table_cell), Paragraph("77.78", table_cell), Paragraph("93.43", table_cell), Paragraph("99.49", table_cell), Paragraph("+21.71", table_cell)],
-        [Paragraph("sub-HUP142", table_cell), Paragraph("MTL", table_cell), Paragraph("108", table_cell), Paragraph("15", table_cell), Paragraph("85.35", table_cell), Paragraph("90.91", table_cell), Paragraph("95.96", table_cell), Paragraph("97.98", table_cell), Paragraph("+7.07", table_cell)],
-        [Paragraph("sub-HUP144", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("111", table_cell), Paragraph("6", table_cell), Paragraph("49.77", table_cell), Paragraph("68.54", table_cell), Paragraph("92.49", table_cell), Paragraph("100.0", table_cell), Paragraph("+31.46", table_cell)],
-        [Paragraph("sub-HUP150", table_cell), Paragraph("INSULAR", table_cell), Paragraph("89", table_cell), Paragraph("8", table_cell), Paragraph("63.91", table_cell), Paragraph("76.92", table_cell), Paragraph("76.92", table_cell), Paragraph("98.22", table_cell), Paragraph("+21.30", table_cell)],
-        [Paragraph("sub-HUP151", table_cell), Paragraph("MFL", table_cell), Paragraph("172", table_cell), Paragraph("3", table_cell), Paragraph("58.53", table_cell), Paragraph("69.41", table_cell), Paragraph("98.53", table_cell), Paragraph("99.71", table_cell), Paragraph("+30.30", table_cell)],
-        [Paragraph("sub-HUP157", table_cell), Paragraph("MTL", table_cell), Paragraph("164", table_cell), Paragraph("14", table_cell), Paragraph("57.57", table_cell), Paragraph("66.12", table_cell), Paragraph("96.71", table_cell), Paragraph("98.68", table_cell), Paragraph("+32.56", table_cell)],
-        [Paragraph("sub-HUP160", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("102", table_cell), Paragraph("20", table_cell), Paragraph("55.49", table_cell), Paragraph("64.29", table_cell), Paragraph("75.82", table_cell), Paragraph("93.96", table_cell), Paragraph("+29.67", table_cell)],
-        [Paragraph("sub-HUP162", table_cell), Paragraph("MTL", table_cell), Paragraph("169", table_cell), Paragraph("10", table_cell), Paragraph("62.70", table_cell), Paragraph("75.55", table_cell), Paragraph("88.40", table_cell), Paragraph("96.24", table_cell), Paragraph("+20.69", table_cell)],
-        [Paragraph("sub-HUP164", table_cell), Paragraph("MTL", table_cell), Paragraph("176", table_cell), Paragraph("9", table_cell), Paragraph("59.76", table_cell), Paragraph("77.51", table_cell), Paragraph("97.34", table_cell), Paragraph("98.22", table_cell), Paragraph("+20.71", table_cell)],
-        [Paragraph("sub-HUP166", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("164", table_cell), Paragraph("5", table_cell), Paragraph("56.11", table_cell), Paragraph("75.24", table_cell), Paragraph("98.75", table_cell), Paragraph("100.0", table_cell), Paragraph("+24.76", table_cell)],
-        [Paragraph("sub-HUP171", table_cell), Paragraph("FRONTAL", table_cell), Paragraph("148", table_cell), Paragraph("13", table_cell), Paragraph("49.64", table_cell), Paragraph("62.59", table_cell), Paragraph("83.81", table_cell), Paragraph("97.84", table_cell), Paragraph("+35.25", table_cell)],
-        [Paragraph("sub-HUP172", table_cell), Paragraph("FRONTAL", table_cell), Paragraph("126", table_cell), Paragraph("10", table_cell), Paragraph("58.90", table_cell), Paragraph("68.64", table_cell), Paragraph("82.20", table_cell), Paragraph("97.88", table_cell), Paragraph("+29.24", table_cell)],
-        [Paragraph("sub-HUP173", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("118", table_cell), Paragraph("8", table_cell), Paragraph("59.91", table_cell), Paragraph("60.81", table_cell), Paragraph("96.40", table_cell), Paragraph("99.10", table_cell), Paragraph("+38.29", table_cell)],
-        [Paragraph("sub-HUP180", table_cell), Paragraph("FRONTAL", table_cell), Paragraph("111", table_cell), Paragraph("8", table_cell), Paragraph("61.35", table_cell), Paragraph("61.35", table_cell), Paragraph("85.51", table_cell), Paragraph("97.58", table_cell), Paragraph("+36.23", table_cell)],
-        [Paragraph("sub-HUP181", table_cell), Paragraph("TEMPORAL", table_cell), Paragraph("136", table_cell), Paragraph("8", table_cell), Paragraph("53.52", table_cell), Paragraph("70.31", table_cell), Paragraph("91.80", table_cell), Paragraph("97.66", table_cell), Paragraph("+27.35", table_cell)],
-        [Paragraph("sub-HUP185", table_cell), Paragraph("MTL", table_cell), Paragraph("113", table_cell), Paragraph("6", table_cell), Paragraph("59.07", table_cell), Paragraph("84.19", table_cell), Paragraph("86.98", table_cell), Paragraph("100.0", table_cell), Paragraph("+15.81", table_cell)],
-        [Paragraph("sub-HUP187", table_cell), Paragraph("MTL", table_cell), Paragraph("87", table_cell), Paragraph("14", table_cell), Paragraph("65.61", table_cell), Paragraph("82.17", table_cell), Paragraph("92.36", table_cell), Paragraph("96.18", table_cell), Paragraph("+14.01", table_cell)],
-        [Paragraph("sub-HUP188", table_cell), Paragraph("FRONTAL", table_cell), Paragraph("161", table_cell), Paragraph("18", table_cell), Paragraph("53.31", table_cell), Paragraph("63.07", table_cell), Paragraph("63.07", table_cell), Paragraph("95.82", table_cell), Paragraph("+32.75", table_cell)],
-        [Paragraph("sub-HUP190", table_cell), Paragraph("MTL", table_cell), Paragraph("149", table_cell), Paragraph("12", table_cell), Paragraph("53.02", table_cell), Paragraph("74.73", table_cell), Paragraph("92.88", table_cell), Paragraph("99.29", table_cell), Paragraph("+24.56", table_cell)],
-        [Paragraph("<b>Average</b>", table_cell_bold), Paragraph("—", table_cell), Paragraph("116.5", table_cell), Paragraph("8.8", table_cell), Paragraph("<b>59.69</b>", table_cell_bold), Paragraph("<b>72.21</b>", table_cell_bold), Paragraph("<b>89.81</b>", table_cell_bold), Paragraph("<b>98.17</b>", table_cell_bold), Paragraph("<b>+25.96</b>", table_cell_bold)]
+    left_col = [
+        Paragraph('<b>Submitted by:</b>', st['cover_meta_b']),
+        Spacer(1, 8),
+        Paragraph('<b>D. V. V. Anjaneya Kumar</b> (Roll No: 23118029)', st['cover_meta']),
+        Paragraph('<b>Yash Mittal</b> (Roll No: 22118111)', st['cover_meta']),
+        Spacer(1, 14),
+        Paragraph('<b>Degree:</b> B.Tech', st['cover_meta']),
+        Paragraph('<b>Branch:</b> Information Technology', st['cover_meta']),
+        Paragraph('<b>Semester:</b> 7th Semester', st['cover_meta']),
     ]
-    t61 = Table(t61_rows, colWidths=[55, 60, 30, 25, 52, 60, 52, 65, 50])
-    t61.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#e2e8f0')),
-        ('GRID', (0,0), (-1,-1), 0.4, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 1),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 1),
-    ]))
-    story.append(t61)
-    story.append(Spacer(1, 4))
-    story.append(Image(os.path.join(FIG_DIR, 'fig8_loss.png'), width=460, height=105))
-    story.append(Paragraph("<i>Fig. 8: Bidirectional GRU Sequence Model Training Loss Trajectory (80 Epochs) [15]</i>", fig_cap_style))
-    story.append(Image(os.path.join(FIG_DIR, 'fig9_roc.png'), width=460, height=105))
-    story.append(Paragraph("<i>Fig. 9: Multi-Model ROC Curves & Confusion Matrix (SVM vs. Proposed Bi-GRU) [1, 15]</i>", fig_cap_style))
-    story.append(Paragraph("<b>6.3 Baseline SVM Replication Results (Tables 3 & 4)</b>", h2_style))
-    story.append(Paragraph(
-        "During the mid-semester evaluation, we faithfully reimplemented the baseline methodology of Fang et al. (2024), applying an RBF-SVM classifier (C = 0.5) to both the ENCS alone feature set (reproducing Table 3) and the multimodal ENCS + Persistence Entropy feature set (reproducing Table 4) across all 22 subjects from the OpenNeuro ds004100 cohort.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 26: CHAPTER 6 (Body Page 20)
-    # =========================================================================
-    story.append(Paragraph(
-        "Table 6.1 documents the 22-subject cohort performance for the baseline SVM using ENCS alone. Across the cohort, ENCS alone achieved an average accuracy of 59.69%, precision of 60.72%, recall of 59.44%, F1-score of 59.32%, and ROC-AUC of 62.11%. In several complex neocortical and frontal subjects (e.g., sub-HUP117 and sub-HUP171), accuracy remained below 50%, demonstrating that unweighted network node degree alone lacks sufficient spatial discriminatory power when evaluated on continuous, raw clinical SEEG recordings.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Table 6.2 presents the corresponding cohort results when incorporating multi-dimensional Persistence Entropy (ENCS + PE) into the SVM pipeline. The integration of topological features produced substantial performance gains across all evaluated metrics: average accuracy increased to 72.21% (+12.52% boost), precision reached 75.67% (+14.95% boost), recall reached 67.13% (+7.69% boost), F1-score reached 70.67% (+11.35% boost), and ROC-AUC rose to 78.32% (+16.21% boost). Top-performing medial temporal lobe subjects (e.g., sub-HUP142) achieved 90.91% accuracy and 95.19% AUC.",
-        body_style
-    ))
-    story.append(Paragraph(
-        "As detailed in Table 6.3 (Master Cohort Comparison for Baseline SVM), the addition of Persistence Entropy yielded positive accuracy deltas in 21 out of 22 subjects, with improvements reaching as high as +22.62% in sub-HUP117 and +25.12% in sub-HUP185. These empirical findings rigorously validate the core hypothesis of Fang et al.: topological data analysis provides vital nonlinear information regarding phase-space attractor collapse that significantly enhances linear network degree representations. Nonetheless, an evident performance ceiling persisted: the overall cohort accuracy of 72.21% remained substantially lower than the published benchmark of 94.40%, primarily due to the static SVM's inability to track temporal seizure trajectories across consecutive sliding windows.",
-        body_style
-    ))
-    story.append(Spacer(1, 2))
-
-    story.append(Paragraph("<b>Table 6.2: Systematic SEEG Window Segmentation Strategy Comparison [1, 15]</b>", h2_style))
-    t62_headers = [Paragraph("<b>Strategy</b>", table_header), Paragraph("<b>Window (s)</b>", table_header), Paragraph("<b>Shift (s)</b>", table_header), Paragraph("<b>AC (%)</b>", table_header), Paragraph("<b>P (%)</b>", table_header), Paragraph("<b>R (%)</b>", table_header), Paragraph("<b>F1 (%)</b>", table_header), Paragraph("<b>AUC (%)</b>", table_header)]
-    t62_rows = [
-        t62_headers,
-        [Paragraph("Strategy A (30s / 25s shift)", table_cell_bold), Paragraph("30.0", table_cell), Paragraph("25.0", table_cell), Paragraph("77.43", table_cell), Paragraph("79.51", table_cell), Paragraph("74.52", table_cell), Paragraph("76.89", table_cell), Paragraph("83.81", table_cell)],
-        [Paragraph("Strategy B (10s / 5s shift)", table_cell_bold), Paragraph("10.0", table_cell), Paragraph("5.0", table_cell), Paragraph("64.78", table_cell), Paragraph("69.51", table_cell), Paragraph("56.45", table_cell), Paragraph("61.82", table_cell), Paragraph("68.99", table_cell)],
-        [Paragraph("Strategy C (5s / 2.5s shift)", table_cell_bold), Paragraph("5.0", table_cell), Paragraph("2.5", table_cell), Paragraph("57.34", table_cell), Paragraph("59.90", table_cell), Paragraph("57.58", table_cell), Paragraph("57.64", table_cell), Paragraph("61.22", table_cell)],
-        [Paragraph("Strategy D (Seizure-Centric Event-Aligned)", table_cell_bold), Paragraph("10.0", table_cell), Paragraph("5.0", table_cell), Paragraph("98.66", table_cell), Paragraph("98.09", table_cell), Paragraph("99.36", table_cell), Paragraph("98.71", table_cell), Paragraph("98.91", table_cell)]
+    right_col = [
+        Paragraph('<b>Guided by:</b>', st['cover_meta_b']),
+        Spacer(1, 8),
+        Paragraph('<b>Dr. Gyanendra Kumar Verma</b>', st['cover_meta']),
+        Paragraph('Department of Information Technology', st['cover_meta']),
+        Paragraph('National Institute of Technology Raipur', st['cover_meta']),
     ]
-    t62 = Table(t62_rows, colWidths=[120, 50, 50, 50, 50, 50, 50, 50])
-    t62.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+    cover_tbl = Table([[left_col, right_col]], colWidths=[265, 220])
+    cover_tbl.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
     ]))
-    story.append(t62)
-    story.append(Spacer(1, 4))
-    story.append(Image(os.path.join(FIG_DIR, 'fig11_window.png'), width=460, height=130))
-    story.append(Paragraph("<i>Fig. 11: Systematic SEEG Window Segmentation Strategy Comparison [1]</i>", fig_cap_style))
-
-    story.append(Paragraph("<b>6.4 Proposed Bi-GRU Endsem Results</b>", h1_style))
-    story.append(Paragraph(
-        "To overcome the static snapshot limitations of the baseline SVM, in this end-semester completion we introduced the Bidirectional Gated Recurrent Unit (Bi-GRU) sequence model. The Bi-GRU models each electrode contact as a temporal sequence of micro-windows, tracking the evolving wave of hypersynchrony and topological complexity collapse in both forward and backward temporal directions. Table 6.4 presents the 22-subject cohort results for the proposed Bi-GRU utilizing ENCS alone. By simply substituting the static classifier with a recurrent sequence architecture, average accuracy jumped from 59.69% to 89.81% (+30.12% improvement), precision reached 87.22%, recall reached 93.99%, and ROC-AUC reached 90.97%.",
-        body_style
-    ))
+    story.append(cover_tbl)
+    story.append(Spacer(1, 48))
+    story.append(HRFlowable(width='92%', thickness=0.8, color=RULE_GRAY, spaceBefore=10, spaceAfter=6))
     story.append(PageBreak())
 
     # =========================================================================
-    # PAGE 27: CHAPTER 6 (Body Page 21)
+    # PAGE ii: DECLARATION
     # =========================================================================
-    story.append(Paragraph(
-        "Table 6.5 documents the performance of the proposed Bi-GRU when fusing ENCS with multi-dimensional Persistence Entropy (ENCS + PE). The multimodal Bi-GRU achieved extraordinary diagnostic accuracy across the entire cohort: average Accuracy reached 98.17%, Precision reached 96.92%, Recall reached an exceptional 99.69%, F1-Score reached 98.27%, and ROC-AUC reached 98.42%. In four distinct patients (sub-HUP144, sub-HUP166, sub-HUP185, and sub-HUP130), the model achieved 100.0% sensitivity and 100.0% specificity (AUC = 1.000). Table 6.6 summarizes the patient-by-patient comparison for the proposed GRU pipeline, demonstrating that adding Persistence Entropy boosted accuracy in every single subject, with individual gains up to +32.75% (sub-HUP188). Most importantly, the recall of 99.69% confirms that almost zero true epileptogenic contacts were missed across the entire cohort of >2,500 electrodes.",
-        body_style
-    ))
-    story.append(Spacer(1, 2))
-
-    story.append(Paragraph("<b>Table 6.3: Master Ablation Study Across All Six System Configurations [1, 15, 16]</b>", h2_style))
-    t63_headers = [Paragraph("<b>Model</b>", table_header), Paragraph("<b>Segmentation</b>", table_header), Paragraph("<b>Features</b>", table_header), Paragraph("<b>Classifier</b>", table_header), Paragraph("<b>AC (%)</b>", table_header), Paragraph("<b>P (%)</b>", table_header), Paragraph("<b>R (%)</b>", table_header), Paragraph("<b>F1 (%)</b>", table_header), Paragraph("<b>AUC (%)</b>", table_header)]
-    t63_rows = [
-        t63_headers,
-        [Paragraph("Paper Reported (Fang et al., 2024)", table_cell_bold), Paragraph("30s / 25s shift", table_cell), Paragraph("ENCS + PE", table_cell), Paragraph("RBF-SVM (C=0.5)", table_cell), Paragraph("94.40", table_cell), Paragraph("98.48", table_cell), Paragraph("89.74", table_cell), Paragraph("93.40", table_cell), Paragraph("96.97", table_cell)],
-        [Paragraph("ENCS -> SVM", table_cell_bold), Paragraph("30s / 25s shift", table_cell), Paragraph("ENCS", table_cell), Paragraph("RBF-SVM (C=0.5)", table_cell), Paragraph("67.00", table_cell), Paragraph("66.86", table_cell), Paragraph("73.08", table_cell), Paragraph("69.02", table_cell), Paragraph("69.03", table_cell)],
-        [Paragraph("ENCS + PE -> SVM (Paper Baseline)", table_cell_bold), Paragraph("30s / 25s shift", table_cell), Paragraph("ENCS + PE", table_cell), Paragraph("RBF-SVM (C=0.5)", table_cell), Paragraph("77.43", table_cell), Paragraph("79.51", table_cell), Paragraph("74.52", table_cell), Paragraph("76.89", table_cell), Paragraph("83.81", table_cell)],
-        [Paragraph("ENCS -> GRU", table_cell_bold), Paragraph("30s / 25s shift", table_cell), Paragraph("ENCS", table_cell), Paragraph("Bidirectional GRU", table_cell), Paragraph("96.36", table_cell), Paragraph("93.50", table_cell), Paragraph("100.0", table_cell), Paragraph("96.59", table_cell), Paragraph("95.74", table_cell)],
-        [Paragraph("ENCS + PE -> GRU", table_cell_bold), Paragraph("30s / 25s shift", table_cell), Paragraph("ENCS + PE", table_cell), Paragraph("Bidirectional GRU", table_cell), Paragraph("99.14", table_cell), Paragraph("98.51", table_cell), Paragraph("99.80", table_cell), Paragraph("99.15", table_cell), Paragraph("99.10", table_cell)],
-        [Paragraph("Proposed: Seizure-Centric + ENCS+PE + GRU", table_cell_bold), Paragraph("Seizure-Centric (10s/5s)", table_cell), Paragraph("ENCS + PE", table_cell), Paragraph("Bidirectional GRU", table_cell), Paragraph("98.66", table_cell), Paragraph("98.09", table_cell), Paragraph("99.36", table_cell), Paragraph("98.71", table_cell), Paragraph("98.91", table_cell)]
-    ]
-    t63 = Table(t63_rows, colWidths=[90, 65, 55, 75, 40, 40, 40, 40, 40])
-    t63.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#e0f2fe')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-    ]))
-    story.append(t63)
-    story.append(Spacer(1, 4))
-    story.append(Image(os.path.join(FIG_DIR, 'fig10_ablation.png'), width=460, height=130))
-    story.append(Paragraph("<i>Fig. 10: Master Model Ablation Study: Overall Performance Benchmark [1]</i>", fig_cap_style))
-
-    story.append(Paragraph("<b>6.5 Windowing Strategy Experimental Comparison</b>", h1_style))
-    story.append(Paragraph(
-        "To evaluate how temporal segmentation resolution impacts localization accuracy, we conducted a systematic benchmark comparing four windowing strategies across the cohort, as detailed in Table 6.7: Strategy A (Standard 30s Window / 25s Shift: 77.43% AC, 83.81% AUC); Strategy B (Intermediate 10s Window / 5s Shift: 64.78% AC, 68.99% AUC); Strategy C (Micro 5s Window / 2.5s Shift: 57.34% AC, 61.22% AUC); and Strategy D (Proposed Seizure-Centric Event-Aligned Micro-Windows: 98.66% AC, 98.09% P, 99.36% R, 98.71% F1, and 98.91% ROC-AUC).",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 28: CHAPTER 6 (Body Page 22)
-    # =========================================================================
-    story.append(Paragraph(
-        "This experimental comparison demonstrates that high-resolution micro-windows provide optimal feature representations when and only when coupled with a recurrent temporal model capable of integrating sequential context.",
-        body_style
-    ))
-    story.append(Spacer(1, 2))
-
-    story.append(Paragraph("<b>Table 6.4: Non-Parametric Wilcoxon Signed-Rank Test for Statistical Significance [1, 14]</b>", h2_style))
-    t64_headers = [Paragraph("<b>Feature</b>", table_header), Paragraph("<b>Band</b>", table_header), Paragraph("<b>SOZ Mean &plusmn; Std</b>", table_header), Paragraph("<b>Non-SOZ Mean &plusmn; Std</b>", table_header), Paragraph("<b>Test</b>", table_header), Paragraph("<b>p-value</b>", table_header), Paragraph("<b>Significance</b>", table_header)]
-    t64_rows = [
-        t64_headers,
-        [Paragraph("ENCS (Degree)", table_cell_bold), Paragraph("Gamma (30-60 Hz)", table_cell), Paragraph("26.4 &plusmn; 8.1", table_cell), Paragraph("12.8 &plusmn; 5.3", table_cell), Paragraph("Mann-Whitney U", table_cell), Paragraph("< 0.0001", table_cell), Paragraph("*** (p < 0.001)", table_cell)],
-        [Paragraph("Persistence Entropy (H0)", table_cell_bold), Paragraph("Gamma", table_cell), Paragraph("1.42 &plusmn; 0.21", table_cell), Paragraph("1.89 &plusmn; 0.18", table_cell), Paragraph("Mann-Whitney U", table_cell), Paragraph("< 0.001", table_cell), Paragraph("** (p < 0.01)", table_cell)],
-        [Paragraph("Persistence Entropy (H1)", table_cell_bold), Paragraph("Gamma", table_cell), Paragraph("0.85 &plusmn; 0.15", table_cell), Paragraph("0.52 &plusmn; 0.12", table_cell), Paragraph("Mann-Whitney U", table_cell), Paragraph("< 0.001", table_cell), Paragraph("** (p < 0.01)", table_cell)],
-        [Paragraph("Persistence Entropy (H2)", table_cell_bold), Paragraph("Gamma", table_cell), Paragraph("0.41 &plusmn; 0.09", table_cell), Paragraph("0.22 &plusmn; 0.07", table_cell), Paragraph("Mann-Whitney U", table_cell), Paragraph("< 0.01", table_cell), Paragraph("* (p < 0.05)", table_cell)]
-    ]
-    t64 = Table(t64_rows, colWidths=[100, 75, 75, 80, 65, 45, 50])
-    t64.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 2),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 2),
-    ]))
-    story.append(t64)
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>6.6 Master Ablation Study</b>", h1_style))
-    story.append(Paragraph(
-        "To rigorously decouple and quantify the individual contribution of each component within our proposed computational framework, we executed a comprehensive Master Ablation Study evaluating six distinct system configurations on identical cross-validation partitions: (1) Configuration 1 (Published Paper Baseline - Fang et al., 2024: 94.40% AC, 98.48% P, 89.74% R, 96.97% AUC); (2) Configuration 2 (ENCS -> SVM: 67.00% AC, 69.03% AUC); (3) Configuration 3 (ENCS + PE -> SVM: 77.43% AC, 83.81% AUC, +10.43% AC gain from TDA); (4) Configuration 4 (ENCS -> GRU: 96.36% AC, 95.74% AUC, +29.36% AC gain over static SVM); (5) Configuration 5 (ENCS + PE -> GRU: 99.14% AC, 99.10% AUC); and (6) Configuration 6 (Proposed: Seizure-Centric + ENCS + PE + GRU: 98.66% AC, 98.09% P, 99.36% R, 98.71% F1, 98.91% AUC). The ablation study establishes that while topological data analysis provides indispensable geometrical sensitivity (+10.4% in SVM, +2.8% in GRU), the architectural leap from static classification to bidirectional recurrent sequence modeling is the single most decisive factor, driving a +21.7% to +31.6% performance leap.",
-        body_style
-    ))
-    story.append(Spacer(1, 2))
-    story.append(Image(os.path.join(FIG_DIR, 'fig12_shaft.png'), width=460, height=130))
-    story.append(Paragraph("<i>Fig. 12: Patient-Specific Clinical Electrode Shaft Localization (sub-HUP142) [19]</i>", fig_cap_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 29: CHAPTER 6 (Body Page 23)
-    # =========================================================================
-    story.append(Paragraph("<b>6.7 Statistical Hypothesis Testing</b>", h1_style))
-    story.append(Paragraph(
-        "To confirm that the extracted functional and topological features exhibit genuine biological separation rather than random statistical noise, we performed non-parametric Mann-Whitney U hypothesis tests across all electrode channels in the 22-subject cohort. As summarized in Table 6.9:",
-        body_style
-    ))
-    story.append(Paragraph("&bull; <b>Epileptic Network Connectivity Strength (ENCS in Gamma Band):</b> SOZ channels exhibited a mean degree of 26.4 &plusmn; 8.1, compared to 12.8 &plusmn; 5.3 for Non-SOZ channels. The difference was highly statistically significant (Mann-Whitney U test, p < 0.0001, ***), confirming that epileptogenic foci operate as hyper-connected functional hubs.", bullet_style))
-    story.append(Paragraph("&bull; <b>Persistence Entropy Dimension 0 (PE H0):</b> SOZ channels showed significantly lower connected component entropy (1.42 &plusmn; 0.21) compared to healthy cortex (1.89 &plusmn; 0.18, p < 0.001, **), reflecting the collapse of diverse baseline microstates into uniform synchronization.", bullet_style))
-    story.append(Paragraph("&bull; <b>Persistence Entropy Dimension 1 (PE H1):</b> SOZ channels exhibited elevated 1D loop entropy (0.85 &plusmn; 0.15) relative to non-SOZ tissue (0.52 &plusmn; 0.12, p < 0.001, **), capturing the emergence of strong, persistent limit cycles during rhythmic seizure discharge.", bullet_style))
-    story.append(Paragraph("&bull; <b>Persistence Entropy Dimension 2 (PE H2):</b> SOZ channels showed elevated 2D void entropy (0.41 &plusmn; 0.09) compared to normal cortex (0.22 &plusmn; 0.07, p < 0.01, *), signifying higher-dimensional nonlinear phase-space distortion.", bullet_style))
-    story.append(Paragraph("All four extracted features demonstrated statistically significant differentiation between epileptogenic and healthy tissue, providing rigorous mathematical justification for multimodal fusion.", body_style))
-
-    story.append(Paragraph("<b>6.8 Patient-Specific Clinical Localization Case Study (sub-HUP142)</b>", h1_style))
-    story.append(Paragraph(
-        "To validate the clinical translatability of our pipeline, we performed an in-depth electrode-level case study on patient sub-HUP142, a representative case of medically refractory Medial Temporal Lobe (MTL) epilepsy. The patient was implanted with 108 valid intracranial electrode contacts across 10 multi-lead depth shafts targeting bilateral mesial temporal structures, including shafts LA (anterior hippocampus/amygdala), LB (middle hippocampus), LC (posterior hippocampus), and LH (parahippocampal gyrus). Clinical consensus identified 15 ground-truth SOZ contacts located exclusively along shafts LA (contacts LA01-LA04), LB (contacts LB01-LB04), LC (contacts LC01-LC03), and LH (contacts LH01-LH04).",
-        body_style
-    ))
-    story.append(Paragraph(
-        "Our proposed Bi-GRU pipeline with Seizure-Centric Event Alignment successfully predicted all 15 ground-truth SOZ channels (True Positives = 15/15, Recall = 100.0%) with only 2 false-positive margin contacts (LA05 and LB05, situated immediately adjacent to the onset focus in the transition zone). Overall single-patient accuracy reached 98.15% with an ROC-AUC of 99.12%. Postoperative clinical records confirmed that surgical resection of the mesial temporal lobe encompassing contacts LA01-LA04 and LB01-LB04 rendered the patient completely seizure-free (Engel Class IA outcome at 24 months). This electrode-level concordance demonstrates that our automated pipeline reliably identifies the true surgical resection zone without unnecessary sacrifice of adjacent functional parenchyma.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 30: CHAPTER 7: DISCUSSION (Body Page 24)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 7: DISCUSSION</b>", chapter_style))
-    story.append(Paragraph("<b>7.1 Interpretation of Network Connectivity in Epileptogenesis</b>", h1_style))
-    story.append(Paragraph(
-        "The empirical findings of this project provide profound neurophysiological insights into the mechanistic behavior of epileptogenic brain networks. The marked elevation of Epileptic Network Connectivity Strength (ENCS) observed in SOZ channels (mean degree 26.4 vs. 12.8, p < 0.0001) confirms that the seizure onset zone does not operate as an isolated passive focus. Instead, it functions as an intensely interconnected functional hub that actively recruits surrounding neuronal populations during the transition into seizure activity. By utilizing the Weighted Phase Lag Index (WPLI) in the gamma band (30–60 Hz), our pipeline isolated genuine, physiologically driven phase synchronization while completely eliminating zero-lag volume conduction artifacts. This demonstrates that gamma-band phase locking is a primary electrophysiological driver of ictogenesis, mediating rapid cross-structure recruitment across depth electrode shafts.",
-        body_style
-    ))
-    story.append(Paragraph("<b>7.2 Topological Entropy as a Signature of Phase-Space Collapse</b>", h1_style))
-    story.append(Paragraph(
-        "A pivotal discovery of our research—first observed in our mid-semester replication and further consolidated in our end-semester investigations—is the profound diagnostic value of multi-dimensional Topological Data Analysis (TDA). During normal baseline cognitive states, the brain operates as an open, high-dimensional, weakly chaotic dynamical system. The reconstructed phase-space trajectory wanders across a highly heterogeneous manifold, generating diverse multi-scale topological features and high Persistence Entropy. During the onset of an epileptic seizure, paroxysmal hypersynchrony constrains neuronal degrees of freedom. The dynamical trajectory rapidly collapses into a low-dimensional, rigid periodic limit cycle. This topological collapse manifests as a statistically significant drop in connected-component entropy (PE H0) and a simultaneous concentration of persistence in 1D loop structures (PE H1). Adding Persistence Entropy to network degree provided a +12.52% accuracy boost in the baseline SVM and pushed Bi-GRU sensitivity to 99.69%, proving that nonlinear geometric invariants capture critical information invisible to linear graph metrics.",
-        body_style
-    ))
-    story.append(Paragraph("<b>7.3 Why Bi-GRU Temporal Modeling Resolves the Midsem Performance Gap</b>", h1_style))
-    story.append(Paragraph(
-        "The most critical technological advancement between our mid-semester preliminary work and our end-semester completion lies in the transition from static, memoryless classification (SVM) to recurrent sequential modeling (Bi-GRU). An epileptic seizure is fundamentally a temporal process rather than a static snapshot. In clinical recordings, the primary onset focus fires first, followed milliseconds later by secondary propagation zones. A static classifier analyzing an isolated 30-second window cannot distinguish whether a channel was an initiator or a follower, leading to high false-positive rates. The Bidirectional GRU resolves this limitation by maintaining continuous hidden states across consecutive micro-windows. Its forward recurrent cells track the initial emergence of hypersynchrony, while its backward recurrent cells integrate subsequent propagation context. Combined with global temporal mean pooling and dynamic focal loss, the Bi-GRU sequence model drove cohort accuracy from 72.21% (SVM) to 98.66%, effectively bridging the performance gap and surpassing the published literature.",
-        body_style
-    ))
-    story.append(Paragraph("<b>7.4 Clinical Feasibility and Surgical Translation</b>", h1_style))
-    story.append(Paragraph(
-        "From a clinical translation perspective, automated algorithms must satisfy three non-negotiable medical criteria: (1) <b>High Sensitivity (Near-Zero False Negatives):</b> Missing an epileptogenic contact leads to incomplete resection and persistent disabling seizures. Our proposed pipeline achieves 99.36% to 99.69% recall, ensuring nearly zero false negatives; (2) <b>High Specificity (Low False Positives):</b> Falsely classifying healthy functional cortex risks cognitive or motor deficits. Our model achieves 98.09% precision, with false positives confined strictly to the immediate boundary zone; and (3) <b>Seamless Integration with Clinical Workflow:</b> The pipeline directly ingests raw BIDS-standard EDF files and outputs structured JSON clinical reports alongside electrode shaft visualizations.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 31: CHAPTER 7 (Body Page 25)
-    # =========================================================================
-    story.append(Paragraph("<b>7.5 Computational Complexity and Runtime Analysis</b>", h1_style))
-    story.append(Paragraph(
-        "Computational efficiency is critical for presurgical and intraoperative utility. The complete end-to-end processing pipeline—including downsampling, CAR referencing, filtering, WPLI functional connectivity, Takens embedding, Ripser persistent homology, and Bi-GRU sequence inference—requires approximately 14 to 18 seconds per patient on a standard workstation CPU. This demonstrates that the algorithm can be executed in near real-time during clinical telemetry reviews or rapid intraoperative electrocorticography (ECoG) monitoring.",
-        body_style
-    ))
+    if os.path.exists(LOGO_PATH):
+        sm_logo = Image(LOGO_PATH, width=46, height=46, kind='proportional')
+        sm_logo.hAlign = 'CENTER'
+        story.append(sm_logo)
     story.append(Spacer(1, 10))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor('#cbd5e1'), spaceAfter=15))
-    story.append(Paragraph("<b>Execution Profile Across Pipeline Stages (Single 120-Channel Patient)</b>", h2_style))
-
-    runtime_data = [
-        [Paragraph("<b>Pipeline Stage</b>", table_header), Paragraph("<b>Computational Operation</b>", table_header), Paragraph("<b>Algorithmic Complexity</b>", table_header), Paragraph("<b>Execution Time (s)</b>", table_header), Paragraph("<b>Memory (MB)</b>", table_header)],
-        [Paragraph("Stage 1", table_cell_bold), Paragraph("Raw EDF Ingestion & CAR Spatial Referencing", table_cell), Paragraph("O(N &bull; T)", table_cell), Paragraph("1.84 s", table_cell), Paragraph("85 MB", table_cell)],
-        [Paragraph("Stage 2", table_cell_bold), Paragraph("Filtering & Gamma Band Isolation (MNE)", table_cell), Paragraph("O(N &bull; T &bull; log T)", table_cell), Paragraph("2.15 s", table_cell), Paragraph("120 MB", table_cell)],
-        [Paragraph("Stage 3", table_cell_bold), Paragraph("WPLI Functional Connectivity Matrix (N x N)", table_cell), Paragraph("O(N&sup2; &bull; K)", table_cell), Paragraph("3.42 s", table_cell), Paragraph("160 MB", table_cell)],
-        [Paragraph("Stage 4", table_cell_bold), Paragraph("Takens Embedding & Ripser Persistent Homology", table_cell), Paragraph("O(N &bull; M&sup3;)", table_cell), Paragraph("7.65 s", table_cell), Paragraph("310 MB", table_cell)],
-        [Paragraph("Stage 5", table_cell_bold), Paragraph("Bi-GRU Recurrent Sequence Inference (PyTorch)", table_cell), Paragraph("O(N &bull; T &bull; d&sup2;)", table_cell), Paragraph("0.48 s", table_cell), Paragraph("95 MB", table_cell)],
-        [Paragraph("Stage 6", table_cell_bold), Paragraph("Clinical Report & JSON Localization Output", table_cell), Paragraph("O(N)", table_cell), Paragraph("0.12 s", table_cell), Paragraph("15 MB", table_cell)],
-        [Paragraph("<b>Total</b>", table_cell_bold), Paragraph("<b>Complete End-to-End Execution Pipeline</b>", table_cell_bold), Paragraph("<b>Composite</b>", table_cell_bold), Paragraph("<b>15.66 s</b>", table_cell_bold), Paragraph("<b>310 MB Peak</b>", table_cell_bold)],
-    ]
-    t_run = Table(runtime_data, colWidths=[50, 160, 110, 80, 80])
-    t_run.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#f1f5f9')),
-        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#e2e8f0')),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('TOPPADDING', (0,0), (-1,-1), 3),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
-    ]))
-    story.append(t_run)
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 32: CHAPTER 8: CONCLUSION AND FUTURE SCOPE (Body Page 26)
-    # =========================================================================
-    story.append(Paragraph("<b>CHAPTER 8: CONCLUSION AND FUTURE SCOPE</b>", chapter_style))
-    story.append(Paragraph("<b>8.1 Summary of Contributions</b>", h1_style))
-    story.append(Paragraph(
-        "In this B.Tech Minor Project, we have successfully developed, implemented, and thoroughly validated a comprehensive, automated computational framework for Seizure Onset Zone (SOZ) localization from invasive Stereotactic EEG recordings in patients with drug-resistant epilepsy. The key technical contributions of this project include:",
-        body_style
-    ))
-    story.append(Paragraph("<b>1. Complete End-to-End Reimplementation:</b> We faithfully replicated the state-of-the-art dual-branch baseline of Fang et al. (Frontiers in Human Neuroscience, 2024) across all 22 subjects (>2,500 electrodes) from OpenNeuro ds004100.", bullet_style))
-    story.append(Paragraph("<b>2. Dual-Branch Feature Engineering:</b> We formulated and deployed Weighted Phase Lag Index (WPLI) brain networks in the gamma band (ENCS) and multi-dimensional Vietoris-Rips persistent homology (Persistence Entropy across H0, H1, H2).", bullet_style))
-    story.append(Paragraph("<b>3. Diagnosis of the Static Performance Gap:</b> In our midsem evaluation, we empirically identified why static SVMs hit a performance ceiling (72.21% AC) on raw clinical data due to temporal coarseness and memoryless snapshot processing.", bullet_style))
-    story.append(Paragraph("<b>4. Novel Recurrent Sequential Architecture:</b> In this endsem completion, we engineered a Bidirectional Gated Recurrent Unit (Bi-GRU) sequence model with global temporal mean pooling and dynamic focal loss.", bullet_style))
-    story.append(Paragraph("<b>5. Seizure-Centric Event Alignment:</b> We introduced a targeted micro-window segmentation strategy centered on electrographic seizure onset.", bullet_style))
-    story.append(Paragraph("<b>6. Benchmark Superiority:</b> Our proposed system attained cohort-wide metrics of 98.66% Accuracy, 98.09% Precision, 99.36% Recall, 98.71% F1-Score, and 98.91% ROC-AUC, significantly outperforming both the midsem baseline and published benchmarks.", bullet_style))
-    story.append(Paragraph("<b>7. Clinical Validation:</b> We verified our predictions against surgical resection margins and postoperative Engel Class I seizure-freedom outcomes.", bullet_style))
-
-    story.append(Paragraph("<b>8.2 Objectives Realized</b>", h1_style))
-    story.append(Paragraph(
-        "All seven original project objectives set forth at the inception of this minor project have been fully achieved. The transition from the mid-semester preliminary study (focused on baseline replication) to the end-semester final delivery (focused on deep sequential modeling and clinical validation) has resulted in a robust, academically rigorous, and clinically translatable computational framework.",
-        body_style
-    ))
-
-    story.append(Paragraph("<b>8.3 Clinical and Computational Limitations</b>", h1_style))
-    story.append(Paragraph("Despite its remarkable performance, several limitations of the current study must be acknowledged:", body_style))
-    story.append(Paragraph("<b>1. Dependence on Invasive Data:</b> The current pipeline operates strictly on invasive SEEG recordings. Non-invasive presurgical screening from scalp EEG or magnetoencephalography (MEG) remains an open challenge.", bullet_style))
-    story.append(Paragraph("<b>2. Dependence on Seizure Onset Markers:</b> The optimal seizure-centric windowing strategy relies on knowing approximate electrographic seizure onset times from telemetry events.tsv files.", bullet_style))
-    story.append(Paragraph("<b>3. Spatial Coverage Bias:</b> SEEG electrode placement is dictated entirely by clinical hypotheses; non-implanted brain regions cannot be evaluated.", bullet_style))
-
-    story.append(Paragraph("<b>8.4 Future Research Directions</b>", h1_style))
-    story.append(Paragraph(
-        "To build upon the foundations established in this minor project, future research will explore promising frontiers:",
-        body_style
-    ))
-    story.append(Paragraph("&bull; <b>Multi-Modal SEEG-fMRI/PET Fusion:</b> Integrating electrophysiological network metrics with structural connectomes (DTI) and metabolic neuroimaging (FDG-PET) to improve spatial resolution in non-implanted regions.", bullet_style))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 33: CHAPTER 8 (Body Page 27)
-    # =========================================================================
-    story.append(Paragraph(
-        "&bull; <b>Spatial-Temporal Graph Neural Networks (ST-GNNs):</b> Transitioning from separate network feature extraction to unified spatio-temporal graph transformers that jointly learn dynamic topology and sequential propagation.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Unsupervised Seizure Onset Detection:</b> Coupling the Bi-GRU localization model with automated seizure onset detectors to enable completely autonomous, continuous telemetry monitoring.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Closed-Loop Neuromodulation:</b> Adapting the real-time inference pipeline for integration with responsive neurostimulation (RNS) or deep brain stimulation (DBS) devices to deliver abortive electrical stimulation prior to clinical seizure generalization.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Edge Hardware Deployment:</b> Compiling the trained PyTorch Bi-GRU sequence weights onto embedded hardware accelerators (e.g., NVIDIA Jetson Orin Nano, Apple Neural Engine) for zero-latency, point-of-care intraoperative decision support.",
-        bullet_style
-    ))
-    story.append(Paragraph(
-        "&bull; <b>Multi-Center Clinical Trials:</b> Expanding cohort validation beyond the Penn HUP-iEEG cohort to prospective multi-institutional clinical trials across diverse neurosurgical epilepsy centers worldwide.",
-        bullet_style
-    ))
-    story.append(Spacer(1, 15))
-    story.append(HRFlowable(width="100%", thickness=0.8, color=colors.HexColor('#cbd5e1'), spaceAfter=15))
-    story.append(Paragraph("<b>Concluding Remarks on Clinical Impact</b>", h2_style))
-    story.append(Paragraph(
-        "In summary, this B.Tech Minor Project presents a major technological advancement in presurgical epilepsy evaluation. By rigorously demonstrating why static Support Vector Machines fail on raw intracranial telemetry, and proving that the mathematical synthesis of gamma-band WPLI functional connectivity, Vietoris-Rips persistence entropy, and Bidirectional Gated Recurrent Units elevates diagnostic recall to 99.36%, this research bridges the translational chasm between theoretical computational neuroscience and clinical neurosurgical practice.",
-        body_style
-    ))
-    story.append(PageBreak())
-
-    # =========================================================================
-    # PAGE 34: REFERENCES (Body Page 28)
-    # =========================================================================
-    story.append(Paragraph("<b>REFERENCES</b>", chapter_style))
+    story.append(Paragraph('<u>DECLARATION</u>', st['front_title']))
     story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        'We hereby declare that this minor project report entitled <b>"IPRC CarbonTrack: Carbon Footprint Monitoring and Predictive Analytics Platform"</b> '
+        'is our own original work completed under the guidance of <b>Dr. Gyanendra Kumar Verma</b>, Department of Information Technology, '
+        'National Institute of Technology Raipur. This report contains no material previously published or written by another author except where due '
+        'academic reference and citation is made in the text. All software modules, database schemas, and empirical benchmarks reported herein have been '
+        'verified directly from the implemented codebase. This work has not been submitted for the award of any other degree or diploma.',
+        st['body']
+    ))
+    story.append(Spacer(1, 24))
+    story.append(Paragraph(
+        '<b>Submitted by:</b><br/>'
+        '<b>D. V. V. Anjaneya Kumar (23118029)</b><br/>'
+        '<b>Yash Mittal (22118111)</b>',
+        ParagraphStyle('rb', parent=st['body'], alignment=TA_RIGHT, leading=15)
+    ))
+    story.append(Spacer(1, 64))
+    for _ in range(3):
+        story.append(HRFlowable(width='38%', thickness=0.7, color=HF_COLOR, spaceBefore=22, spaceAfter=22))
+    story.append(PageBreak())
 
-    refs = [
-        "[1] C. Fang, X. Li, M. Na, W. Jiang, Y. He, A. Wei, J. Huang, and M. Zhou, \"Epilepsy lesion localization method based on brain function network,\" <i>Frontiers in Human Neuroscience</i>, vol. 18, Art. no. 1431153, Jul. 2024.",
-        "[2] R. S. Fisher et al., \"Operational classification of seizure types by the International League Against Epilepsy: Position Paper of the ILAE Commission,\" <i>Epilepsia</i>, vol. 58, no. 4, pp. 522–530, Apr. 2017.",
-        "[3] P. Kwan, S. C. Schachter, and M. J. Brodie, \"Drug-resistant epilepsy,\" <i>New England Journal of Medicine</i>, vol. 365, no. 10, pp. 919–926, Sep. 2011.",
-        "[4] H. L&uuml;ders, I. Najm, D. Nair, P. Widdess-Walsh, and W. Bingman, \"The epileptogenic zone: general principles,\" <i>Epileptic Disorders</i>, vol. 8, no. Suppl 2, pp. S1–S9, Aug. 2006.",
-        "[5] J. Isnard et al., \"French guidelines on stereoelectroencephalography (SEEG),\" <i>Neurophysiologie Clinique</i>, vol. 48, no. 1, pp. 5–13, Feb. 2018.",
-        "[6] F. Bartolomei et al., \"Defining epileptogenic networks: Contribution of SEEG and mathematical modeling,\" <i>Brain Topography</i>, vol. 30, no. 6, pp. 783–800, Nov. 2017.",
-        "[7] E. Bullmore and O. Sporns, \"Complex brain networks: graph theoretical analysis of structural and functional systems,\" <i>Nature Reviews Neuroscience</i>, vol. 10, no. 3, pp. 186–198, Mar. 2009.",
-        "[8] C. J. Stam, G. Nolte, and A. Daffertshofer, \"Phase lag index: assessment of functional connectivity from multi-channel EEG and MEG,\" <i>Human Brain Mapping</i>, vol. 28, no. 11, pp. 1178–1193, Nov. 2007.",
-        "[9] M. Vinck, R. Oostenveld, M. van Wingerden, F. Battaglia, and C. M. Pennartz, \"An improved index of phase-synchronization for electrophysiological data in the presence of volume-conduction,\" <i>NeuroImage</i>, vol. 55, no. 4, pp. 1548–1565, Apr. 2011.",
-        "[10] P. van Mierlo et al., \"Functional brain connectivity from intracranial EEG to detect the epileptogenic zone,\" <i>NeuroImage</i>, vol. 98, pp. 473–483, Sep. 2014.",
-        "[11] F. Takens, \"Detecting strange attractors in turbulence,\" <i>Dynamical Systems and Turbulence, Lecture Notes in Mathematics</i>, vol. 898, pp. 366–381, 1981.",
-        "[12] M. B. Kennel, R. Brown, and H. D. Abarbanel, \"Determining embedding dimension for phase-space reconstruction using a geometrical construction,\" <i>Physical Review A</i>, vol. 45, no. 6, pp. 3403–3411, Mar. 1992.",
-        "[13] H. Edelsbrunner and J. Harer, \"Persistent homology—a survey,\" <i>Contemporary Mathematics</i>, vol. 453, pp. 257–282, 2008.",
-        "[14] H. Chintakunta, T. Gentimis, R. Gonzalez-Diaz, M. J. Jimenez, and H. Krim, \"An entropy-based persistence summary,\" <i>Pattern Recognition</i>, vol. 48, no. 11, pp. 3719–3731, Nov. 2015.",
-        "[15] K. Cho et al., \"Learning phrase representations using RNN encoder-decoder for statistical machine translation,\" in <i>Proc. EMNLP</i>, Doha, Qatar, Oct. 2014, pp. 1724–1734.",
-        "[16] M. Schuster and K. K. Paliwal, \"Bidirectional recurrent neural networks,\" <i>IEEE Transactions on Signal Processing</i>, vol. 45, no. 11, pp. 2673–2681, Nov. 1997.",
-        "[17] P. Koutsouvelis et al., \"Localizing the epileptogenic zone using deep learning and neuroimaging: A systematic review,\" <i>Brain Communications</i>, vol. 8, no. 1, pp. 1–16, Jan. 2026.",
-        "[18] A. A. Ein Shoka, M. M. Dessouky, A. El-Sayed, and E. E. D. Hemdan, \"An efficient CNN based epileptic seizures detection framework using encrypted EEG signals,\" <i>Alexandria Engineering Journal</i>, vol. 66, pp. 917–932, Mar. 2023.",
-        "[19] Penn HUP Intracranial EEG Surgical Cohort, \"Electrocorticography and Stereo-EEG Recordings in Patients with Drug-Resistant Epilepsy,\" <i>OpenNeuro Dataset ds004100</i>, Version 1.1.3, 2024.",
-        "[20] A. Gramfort et al., \"MEG and EEG data analysis with MNE-Python,\" <i>Frontiers in Neuroscience</i>, vol. 7, Art. no. 267, Dec. 2013.",
-        "[21] U. Bauer, \"Ripser: efficient computation of Vietoris-Rips persistence barcodes,\" <i>Journal of Applied and Computational Topology</i>, vol. 5, no. 3, pp. 391–423, Sep. 2021."
+    # =========================================================================
+    # PAGE iii: ACKNOWLEDGEMENT
+    # =========================================================================
+    story.append(Spacer(1, 14))
+    story.append(Paragraph('<u>ACKNOWLEDGEMENT</u>', st['front_title']))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        'It is a privilege to express our sincere gratitude to the faculty and mentors of the National Institute of Technology Raipur '
+        'for their constant academic support, constructive criticism, and access to institutional computing resources throughout the 7th Semester '
+        'Minor Project curriculum in the Department of Information Technology.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'We are deeply indebted to our project supervisor, <b>Dr. Gyanendra Kumar Verma</b>, Department of Information Technology, '
+        'National Institute of Technology Raipur, for his technical mentorship, architectural review, and sustained encouragement from problem formulation '
+        'through full-stack system verification. His emphasis on methodological rigor, zero-leakage validation, and clear separation between standardized '
+        'statistical modelling and physical greenhouse gas accounting significantly shaped the final architecture of IPRC CarbonTrack.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'We further acknowledge the domain context provided by the ISRO Propulsion Complex (IPRC), Mahendragiri environmental monitoring research specification '
+        '(Project Reference: <b>RES-IPRC-2025-003</b>), as well as authoritative emission factor inventories published by the Central Electricity Authority (CEA) '
+        'of India, the Intergovernmental Panel on Climate Change (IPCC 2019 Refinement), and the Bureau of Energy Efficiency (BEE). Finally, we thank our peers '
+        'and laboratory staff for assisting in end-to-end validation and usability testing.',
+        st['body']
+    ))
+    story.append(Spacer(1, 44))
+    story.append(Paragraph(
+        '<b>D. V. V. Anjaneya Kumar (23118029)</b><br/><b>Yash Mittal (22118111)</b>',
+        ParagraphStyle('rb2', parent=st['body'], alignment=TA_RIGHT, leading=15)
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # PAGE iv: ABSTRACT
+    # =========================================================================
+    story.append(Spacer(1, 14))
+    story.append(Paragraph('<u>ABSTRACT</u>', st['front_title']))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        'Systematic quantification and forecasting of operational greenhouse gas (GHG) emissions are essential for industrial and aerospace test '
+        'facilities seeking compliance with ISO 14064-1 and the Greenhouse Gas Protocol. Many existing organizational tools either compute static spreadsheet '
+        'inventories without predictive intelligence or train black-box machine learning models directly on raw facility logs without isolating standardized '
+        'research baselines from auditable physical consumption records.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'This report presents <b>IPRC CarbonTrack</b> (Research Reference: <b>RES-IPRC-2025-003</b>), a full-stack, three-tier carbon footprint monitoring, '
+        'measurement, and predictive analytics platform designed for the operational context of ISRO Propulsion Complex (IPRC), Mahendragiri. The system enforces '
+        'a clean <b>dual-mode architecture</b> across PostgreSQL: (i) <b>Mode A (Standardized Dataset &amp; ML Analytics)</b> ingests and analyzes a 10,000-record '
+        'multi-year baseline dataset (2024\u20132051, 14 columns, zero missing or duplicate entries) containing 12 Z-score standardized operational/meteorological '
+        'predictors and the physical target <i>Carbon_Emission_kgCO2</i> (mean = 22.956 kg CO2, range = 1.187\u201355.962 kg CO2); and (ii) <b>Mode B (Physical Activity '
+        'Ledger)</b> computes deterministic emissions via <i>E = Q \u00d7 EF</i> across six operational categories and Scopes 1, 2, and 3 using 10 verified emission '
+        'factors from CEA India Baseline v19 (0.82 kg CO2/kWh) and IPCC 2019 guidelines (2.68 kg CO2/L Diesel).',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'The platform integrates a React 18 / Vite 5.4 / Chart.js frontend (15 role-gated routes), a Node.js / Express.js 4.21 REST backend secured with bcryptjs '
+        'password hashing and HS256 JWT Role-Based Access Control (ADMIN, OFFICER, ANALYST), Prisma ORM 5.22 over PostgreSQL (13 relational models), and a Python '
+        'FastAPI microservice serving four Scikit-Learn regressors trained with zero target leakage under both random 80/20 and chronological 80/20 splits. '
+        'Empirical benchmarking demonstrates that Linear Regression achieves the strongest generalization (test R<super>2</super> = 0.8534, MAE = 2.961 kg CO2, '
+        'RMSE = 3.765 kg CO2, chronological R<super>2</super> = 0.8451), outperforming Gradient Boosting (R<super>2</super> = 0.8474), Random Forest (R<super>2</super> = 0.8428), '
+        'and Decision Tree (R<super>2</super> = 0.8243), driven predominantly by standardized energy usage (r = +0.705) and transportation distance (r = +0.590). '
+        'Automated statutory exports via PDFKit (A4 summary audits) and ExcelJS (3-sheet workbooks), chunked CSV ingestion (validated with 100-row synthetic batch uploads '
+        'bringing live DB records to 10,200), immutable audit logs, and Vite production bundling (1,671 modules in 3.48 s) confirm deployment readiness.',
+        st['body']
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # PAGE v: CONTENTS
+    # =========================================================================
+    story.append(Spacer(1, 10))
+    story.append(Paragraph('<u>CONTENTS</u>', st['front_title']))
+    toc_entries = [
+        ('cert', 'CERTIFICATE', 'i'),
+        ('decl', 'DECLARATION', 'ii'),
+        ('ack', 'ACKNOWLEDGEMENT', 'iii'),
+        ('abs', 'ABSTRACT', 'iv'),
+        ('lof', 'LIST OF FIGURES & TABLES', 'vi'),
+        ('ch1', 'CHAPTER 1: INTRODUCTION', '1'),
+        ('ch2', 'CHAPTER 2: LITERATURE REVIEW', '5'),
+        ('ch3', 'CHAPTER 3: DATASET AND PREPROCESSING', '8'),
+        ('ch4', 'CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY', '11'),
+        ('ch5', 'CHAPTER 5: MATHEMATICAL FORMULATION', '15'),
+        ('ch6', 'CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION', '18'),
+        ('ch7', 'CHAPTER 7: DISCUSSION', '24'),
+        ('ch8', 'CHAPTER 8: CONCLUSION AND FUTURE SCOPE', '26'),
+        ('refs', 'REFERENCES', '28'),
     ]
+    story.append(make_toc_table(toc_entries, tracker_ref.get('chapters', {}), st, is_lof=False))
+    story.append(PageBreak())
 
-    for ref in refs:
-        story.append(Paragraph(ref, ParagraphStyle('RefEntry', fontName='Helvetica', fontSize=7.2, leading=9.6, leftIndent=18, firstLineIndent=-18, spaceAfter=4.5, textColor=text_color)))
+    # =========================================================================
+    # PAGE vi: LIST OF FIGURES & TABLES
+    # =========================================================================
+    story.append(Spacer(1, 2))
+    story.append(Paragraph('<u>LIST OF FIGURES &amp; TABLES</u>', st['front_title']))
+    story.append(Paragraph('<b>List of Figures</b>', st['h2']))
+    fig_entries = [
+        ('fig1', 'Fig. 1: Dual-Mode GHG Accounting & Predictive Analytics Framework', '2'),
+        ('fig5', 'Fig. 2: Distribution & Sector Spread of Physical Target Carbon_Emission_kgCO2', '9'),
+        ('fig6', 'Fig. 3: 13\u00d713 Multivariate Pearson Correlation Matrix & Driver Ranking', '9'),
+        ('fig7', 'Fig. 4: Linear Dependence of Carbon Emission on Energy & Transport Z-Scores', '10'),
+        ('fig2', 'Fig. 5: Decoupled Three-Tier Enterprise Microservice Architecture', '11'),
+        ('fig3', 'Fig. 6: Normalized PostgreSQL Entity-Relationship Schema (Prisma Models)', '12'),
+        ('fig4', 'Fig. 7: JWT Authentication, RBAC & Protected Request Lifecycle', '13'),
+        ('fig8', 'Fig. 8: Mode B Operational Quantification Pipeline & Verified Factor Registry', '13'),
+        ('fig12', 'Fig. 9: Validated Batch CSV Ingestion & Statutory Export Synthesis Pipeline', '14'),
+        ('fig9', 'Fig. 10: Multi-Model Regression Benchmark (Random & Chronological Splits)', '19'),
+        ('fig10', 'Fig. 11: Active Linear Regression Parity & Test Residual Error Distribution', '19'),
+        ('fig11', 'Fig. 12: Standardized Feature Attribution Comparison Across Four ML Models', '20'),
+    ]
+    story.append(make_toc_table(fig_entries, tracker_ref.get('figures', {}), st, is_lof=True))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph('<b>List of Tables</b>', st['h2']))
+    tbl_entries = [
+        ('tbl11', 'Table 1.1: Organizational Divisions & Carbon Source Mapping at IPRC Campus', '2'),
+        ('tbl12', 'Table 1.2: RBAC Role Matrix & Division-Level Authorization Boundaries', '3'),
+        ('tbl13', 'Table 1.3: Verified Full-Stack Development & Production Runtime Environment', '4'),
+        ('tbl21', 'Table 2.1: Comparative Review of GHG Accounting & Prediction Approaches', '7'),
+        ('tbl31', 'Table 3.1: Statistical Audit of Preprocessed Baseline Dataset (n = 10,000)', '8'),
+        ('tbl32', 'Table 3.2: Transport Mode, Building Sector & Renewable Quartile Stratification', '10'),
+        ('tbl41', 'Table 4.1: Mounted Express REST API Routes, Prisma Models & RBAC Policies', '12'),
+        ('tbl42', 'Table 4.2: Implemented React SPA Views Mapped to Functional Modules', '14'),
+        ('tbl51', 'Table 5.1: Regression Hyperparameters & Mode B Deterministic Quantification Rules', '17'),
+        ('tbl61', 'Table 6.1: Longitudinal Yearly Baseline Summary Across Selected Years', '18'),
+        ('tbl62', 'Table 6.2: ML Regression Evaluation Metrics Across Four Benchmarked Models', '19'),
+        ('tbl63', 'Table 6.3: Active OLS Coefficients & Test Absolute Error Percentiles', '20'),
+        ('tbl64', 'Table 6.4: Top-6 Relative Feature Attribution Weights Across Four ML Models', '21'),
+        ('tbl65', 'Table 6.5: End-to-End 40-Check Deployment Verification Audit Summary', '21'),
+        ('tbl66', 'Table 6.6: Seeded Verified Emission Factors & Statutory Export Verification', '22'),
+        ('tbl67', 'Table 6.7: Live FastAPI Inference Scenario Sensitivity Evaluation', '22'),
+        ('tbl68', 'Table 6.8: Production Vite Build & Live PostgreSQL Database Snapshot', '23'),
+        ('tbl69', 'Table 6.9: Verified Mitigation Recommendations & Batch Import Ingestion Summary', '23'),
+        ('tbl81', 'Table 8.1: Objective-to-Implementation & Verification Traceability Matrix', '26'),
+        ('tbl82', 'Table 8.2: Phased Future Enhancement Roadmap for IPRC CarbonTrack', '27'),
+    ]
+    story.append(make_toc_table(tbl_entries, tracker_ref.get('tables', {}), st, is_lof=True))
+    story.append(PageBreak())
 
-    doc.build(story, canvasmaker=NumberedCanvas)
-    print("Report PDF generated successfully at:", PDF_PATH)
+    # =========================================================================
+    # CHAPTER 1: INTRODUCTION (Body Pages 1–4)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch1'))
+    story.append(Paragraph('CHAPTER 1: INTRODUCTION', st['chapter']))
+
+    story.append(Paragraph('1.1 Operational Background and Sustainability Imperative', st['h2']))
+    story.append(Paragraph(
+        'Industrial research establishments, aerospace propulsion test centers, and continuous-utility engineering complexes consume high-density electrical power, '
+        'captive diesel standby fuel, compressed gases, specialized cryogenic auxiliaries such as Liquid Nitrogen (LN2), fleet transportation, and municipal water '
+        'and solid waste infrastructure. Under international environmental reporting standards\u2014including the World Resources Institute and World Business Council for '
+        'Sustainable Development (WRI/WBCSD) Greenhouse Gas Protocol Corporate Accounting Standard [1] and ISO 14064-1:2018 [2]\u2014public engineering institutions must '
+        'maintain transparent, verifiable, and repeatable carbon dioxide (CO2) and CO2-equivalent (CO2e) inventories segmented across direct and indirect boundaries.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Within the operational scope of the ISRO Propulsion Complex (IPRC), Mahendragiri (Research Proposal Reference: <b>RES-IPRC-2025-003</b>), environmental '
+        'governance encompasses five distinct organizational divisions modeled directly in the platform database: the <b>Propulsion Testing Facility (PTF)</b>, '
+        '<b>Cryogenic Engine Plant (CEP)</b>, <b>Environmental Management Division (EMD)</b>, <b>Facility Infrastructure &amp; Utilities (FIU)</b>, and <b>Safety &amp; '
+        'Quality Assurance (SQA)</b>. Coordinating activity inventories manually via static spreadsheets introduces outdated grid factors, ambiguous unit conversions, '
+        'absence of role-based governance, and an inability to forecast emissions prior to operational load surges.',
+        st['body']
+    ))
+
+    t11_rows = [
+        ['Propulsion Testing Facility (PTF)', 'Hot-test observation stands & instrumentation', 'Scope 1 & Scope 2 (Fuel / Grid)', 'Stationary diesel & substation loads'],
+        ['Cryogenic Engine Plant (CEP)', 'Upper-stage testing & propellant loading', 'Scope 2 & Scope 3 (Energy / LN2)', 'Compressors & ASU liquid nitrogen'],
+        ['Environmental Management Div. (EMD)', 'Station audits, waste & ecological compliance', 'Scope 3 & Governance (All)', 'SWM disposal, factor governance, audits'],
+        ['Facility Infrastructure & Utilities (FIU)', 'Substations, water plants & DG backups', 'Scope 1, 2 & 3 (Energy / Water)', 'CEA grid imports & CPHEEO water pumping'],
+        ['Safety & Quality Assurance (SQA)', 'Hazmat storage & logistics verification', 'Scope 1 & Scope 3 (Transport)', 'Passenger cars, EV fleet & freight trucks'],
+    ]
+    add_styled_table(story, st,
+                     'Table 1.1: Seeded Organizational Divisions and Emission Boundary Responsibilities (RES-IPRC-2025-003)',
+                     ['IPRC Division (Code)', 'Primary Engineering Function', 'Applicable GHG Scope', 'Monitored Emission Vectors'],
+                     t11_rows, [122, 128, 105, 132], 'tbl11')
+
+    story.append(Paragraph('1.2 Dual-Mode Architectural Rationale (Mode A vs. Mode B)', st['h2']))
+    story.append(Paragraph(
+        'A recurring software design defect in prototype environmental dashboards is mixing normalized machine learning research datasets with raw physical meter '
+        'entries in the same database table. When statistical datasets undergo Z-score standardization prior to regression training, continuous predictors shift to zero '
+        'mean and unit variance, yielding negative scores whenever consumption falls below the baseline average. Without structural segregation, downstream billing or '
+        'audit calculations risk multiplying negative standardized energy values by emission factors, producing non-physical negative carbon inventories.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'To guarantee mathematical and regulatory soundness, <b>IPRC CarbonTrack</b> establishes a strict <b>Dual-Mode Operational Architecture</b> across disjoint '
+        'PostgreSQL schemas, REST controllers, and frontend UI disclosures:',
+        st['body']
+    ))
+    for item in [
+        '<b>Mode A \u2014 Standardized Dataset &amp; Predictive Analytics:</b> Analyzes the 10,000-observation historical and projected research baseline (<i>Preprocessed_Carbon_Footprint_Dataset.csv</i>, extensible via batch CSV import) stored in <i>dataset_records</i>. Twelve input columns contain Z-score standardized features explicitly tagged with yellow standardization notices (<i>StandardizedNotice.jsx</i>), while <i>Carbon_Emission_kgCO2</i> retains physical mass in kg CO2.',
+        '<b>Mode B \u2014 Physical Operational Activity Measurement:</b> Operates over an independent relational ledger (<i>activity_records</i> and <i>emission_results</i>) logging raw physical units (kWh, Litres, km, tonne-km, kg, kL) across six categories (ENERGY, FUEL, TRANSPORTATION, WASTE, WATER, MATERIAL) and GHG Protocol scopes (Scope 1, Scope 2, Scope 3). Every record deterministically multiplies quantity by verified CEA India v19 [3], IPCC 2019 [4], BEE India [5], and CPHEEO [18] emission factors.'
+    ]:
+        story.append(Paragraph('\u2022 ' + item, st['bullet']))
+
+    add_figure(story, st, 'fig1_facility.png',
+               'Fig. 1: Dual-Mode GHG Accounting & Predictive Analytics Framework separating Mode A (Standardized ML) from Mode B (Physical GHG Protocol Ledger).',
+               'fig1', w_inch=6.25, h_inch=3.05)
+
+    story.append(Paragraph('1.2.1 Mode B Operational Category Specifications', st['h3']))
+    story.append(Paragraph(
+        'Inside the Mode B ledger implemented in <i>ActivityMonitoring.jsx</i> and backed by PostgreSQL <i>ActivityRecord</i> tables, environmental officers log '
+        'physical consumption across six specialized operational categories tailored to aerospace testing and facility utilities:',
+        st['body']
+    ))
+    for cat_desc in [
+        '<b>ENERGY (Electricity / Energy):</b> Captures substation grid consumption alongside on-site solar or green renewable kWh versus non-renewable imported kWh under Scope 2 using CEA India v19 (0.820 kg CO2/kWh).',
+        '<b>FUEL (Liquid &amp; Gas Fuel):</b> Tracks captive high-speed diesel (HSD), petrol, and compressed natural gas (CNG) combustion inside standby generators and stationary propulsion auxiliaries under Scope 1.',
+        '<b>TRANSPORTATION (Logistics &amp; Transit):</b> Records passenger fleet transit (BEE India), electric utility vehicles (CEA Grid EV), and heavy freight logistics in tonne-km or vehicle-km across site gates.',
+        '<b>WASTE &amp; WATER:</b> Quantifies municipal solid waste across RECYCLED, LANDFILL, INCINERATED, and COMPOSTED pathways alongside municipal/process water consumption, reuse, and wastewater generation in kilolitres (CPHEEO).',
+        '<b>MATERIAL (Cryogenics &amp; Materials):</b> Accounts for embedded Scope 3 footprints of industrial process inputs, notably air-separation-unit Liquid Nitrogen (LN2, 0.450 kg CO2/kg) consumed in cryogenic engine conditioning.'
+    ]:
+        story.append(Paragraph('\u2022 ' + cat_desc, st['bullet']))
+
+    story.append(Paragraph('1.3 Problem Statement &amp; Stakeholder Roles', st['h2']))
+    story.append(Paragraph(
+        'Institutional sustainability workflows require resolving four interlocking system-level gaps: (1) <i>Structural Data Segregation</i> between standardized '
+        'statistical research sets and physical utility logs; (2) <i>Authoritative Factor Lineage</i> replacing ad-hoc multipliers with versioned CEA India v19 and IPCC 2019 '
+        'registries; (3) <i>Role-Based Access Control (RBAC) &amp; Auditability</i> separating <b>ADMIN</b> (Head, Environmental Safety Group), <b>OFFICER</b> (Senior '
+        'Environmental Officer), and <b>ANALYST</b> (Research Analyst) privileges with immutable audit logs; and (4) <i>Automated Multi-Model ML Benchmarking &amp; Statutory '
+        'Exports</i> delivering leakage-free regression forecasts alongside one-click PDFKit and multi-sheet ExcelJS compliance workbooks.',
+        st['body']
+    ))
+
+    story.append(Paragraph('1.4 Role-Based Stakeholder Matrix &amp; Facility Personas', st['h2']))
+    story.append(Paragraph(
+        'To align security boundaries with real institutional oversight across Mahendragiri, <i>backend/src/scripts/seed.js</i> initializes three distinct RBAC '
+        'roles tied to department codes inside PostgreSQL: (1) <b>ADMIN</b> (seeded for Head, Environmental Safety Group, EMD), holding exclusive privileges to '
+        'manage user roles, review immutable <i>AuditLog</i> histories, and invoke live ML retraining via <i>POST /api/predictions/train</i>; (2) <b>OFFICER</b> '
+        '(seeded for Senior Environmental Officer, EMD), authorized to log Mode B operational activities, update emission factors, triage mitigation recommendations, '
+        'and execute chunked 50 MB CSV batch imports; and (3) <b>ANALYST</b> (seeded for Data Analyst &amp; Research Scholar, PTF), granted read-only exploration over '
+        'Mode A charts, Pearson correlation matrices, prediction scenarios, and PDFKit/ExcelJS compliance report downloads while blocked from administrative mutations.',
+        st['body']
+    ))
+    t12_rows = [
+        ['ADMIN (admin@iprc.gov.in)', 'Head, Environmental Safety Group (EMD)', 'Full CRUD, User Role Admin, POST /train, Audit Logs', 'Authorized (200 OK)'],
+        ['OFFICER (officer@iprc.gov.in)', 'Senior Environmental Officer (EMD)', 'Mode B Activities, Factors, CSV Import, Rec. Status', 'Blocked (403 on /users)'],
+        ['ANALYST (analyst@iprc.gov.in)', 'Data Analyst & Research Scholar (PTF)', 'Dashboard, Explorer, Analytics, ML Predict, Exports', 'Blocked on all mutations'],
+    ]
+    add_styled_table(story, st,
+                     'Table 1.2: Role-Based Access Control (RBAC) Seeded Personas and Privilege Boundaries',
+                     ['Seeded Account / Role', 'Organizational Designation (Dept)', 'Authorized Platform Capabilities', 'Administrative Isolation'],
+                     t12_rows, [118, 128, 152, 89], 'tbl12')
+
+    story.append(Paragraph('1.5 Primary Project Objectives', st['h2']))
+    for obj in [
+        '<b>Objective 1 (Three-Tier Microservice Implementation):</b> Build a decoupled stack linking React 18.3 + Vite 5.4 + Chart.js (15 views), Express 4.21 + Prisma ORM 5.22 + PostgreSQL (13 models), and Python FastAPI (Uvicorn ASGI).',
+        '<b>Objective 2 (Zero-Leakage ML Benchmarking):</b> Train and compare Linear Regression, Decision Tree, Random Forest, and Gradient Boosting regressors across random 80/20 (seed=42) and chronological 80/20 splits strictly on 12 standardized predictors.',
+        '<b>Objective 3 (Mode B Accounting &amp; Factor Registry):</b> Seed 10 authoritative emission factors spanning Indian grid electricity, HSD diesel, petrol, CNG, passenger/freight fleet, waste, water, and cryogenic liquid nitrogen.',
+        '<b>Objective 4 (Validated Bulk CSV Ingestion):</b> Support client-side PapaParse column checking and server-side Multer streaming (up to 50 MB) with chunked 1,000-row Prisma <i>createMany()</i> persistence and <i>ImportLog</i> tracking.',
+        '<b>Objective 5 (Cryptographic RBAC &amp; Statutory Reporting):</b> Enforce 10-round <i>bcryptjs</i> hashing, 7-day HS256 JWT tokens, immutable <i>AuditLog</i> events, and instant PDFKit and three-worksheet ExcelJS exports.'
+    ]:
+        story.append(Paragraph('\u2022 ' + obj, st['bullet']))
+
+    story.append(Paragraph('1.6 Scope and Organization of the Report', st['h2']))
+    story.append(Paragraph(
+        'All architectural details, schema fields, API contracts, dataset numbers, ML benchmarks, and test results reported herein are verified directly from the '
+        'live project repository. Chapter 2 surveys GHG accounting standards and carbon prediction literature. Chapter 3 audits the 10,000-row baseline dataset and '
+        'its 13\u00d713 correlation structure. Chapter 4 documents the three-tier architecture, 13 Prisma models, RBAC sequences, and 15 React views. Chapter 5 presents the '
+        'mathematical formulations governing Mode A and Mode B. Chapter 6 details longitudinal benchmarks, ML metrics, build stats, and 40-point audit results. '
+        'Chapter 7 evaluates trade-offs and limitations, and Chapter 8 outlines conclusions and future milestones.',
+        st['body']
+    ))
+
+    story.append(Paragraph('1.7 Verified Software Stack &amp; Runtime Environment', st['h2']))
+    story.append(Paragraph(
+        'To guarantee end-to-end reproducibility across local development and containerized cloud deployment (<i>docker-compose.yml</i>), every subsystem relies on '
+        'explicitly pinned open-source dependencies listed in Table 1.3.',
+        st['body']
+    ))
+    t13_rows = [
+        ['Frontend Presentation Tier', 'React 18.3.1, Vite 5.4.21, Chart.js, Axios, PapaParse', '15 authenticated SPA views & CSV preview on port 3000'],
+        ['Backend API & Persistence Tier', 'Node.js, Express 4.21.1, Prisma ORM 5.22.0, PostgreSQL 15', '10 mounted REST prefixes, 13 DB models, port 5000'],
+        ['Security & Export Libraries', 'bcryptjs 2.4.3, jsonwebtoken 9.0.2, PDFKit 0.15.1, ExcelJS 4.4.0', 'HS256 RBAC guards & statutory PDF/XLSX generators'],
+        ['Machine Learning Microservice', 'Python 3.12, FastAPI, Uvicorn, Scikit-Learn, Pandas, Joblib', '4 benchmarked regressors & inference API on port 8000'],
+    ]
+    add_styled_table(story, st,
+                     'Table 1.3: Verified Software Dependencies and Runtime Service Allocation Across IPRC CarbonTrack',
+                     ['Architecture Tier', 'Verified Packages & Frameworks', 'Operational Role & Service Port'],
+                     t13_rows, [120, 192, 175], 'tbl13')
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 2: LITERATURE REVIEW (Body Pages 5–7)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch2'))
+    story.append(Paragraph('CHAPTER 2: LITERATURE REVIEW', st['chapter']))
+
+    story.append(Paragraph('2.1 Standardized Organizational GHG Accounting Frameworks', st['h2']))
+    story.append(Paragraph(
+        'Modern organizational carbon reporting rests upon two complementary international standards: the WRI/WBCSD Greenhouse Gas Protocol Corporate Accounting and '
+        'Reporting Standard [1] and ISO 14064-1:2018 [2]. Both classify emissions across three mutually exclusive boundaries to prevent double counting: <b>Scope 1</b> '
+        'encompasses direct combustion from organization-owned boilers, standby generators, test-stand auxiliaries, and fleet vehicles; <b>Scope 2</b> covers indirect '
+        'emissions from purchased grid electricity, heat, or steam; and <b>Scope 3</b> aggregates upstream and downstream value-chain emissions including municipal solid '
+        'waste disposal, potable water supply pumping, employee commuting, and industrial supply inputs such as air-separation-unit Liquid Nitrogen.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'According to the IPCC 2019 Refinement to the 2006 Guidelines for National GHG Inventories [4], Tier 1 estimation multiplies physical consumption records by '
+        'default calorific/stoichiometric emission factors, whereas Tier 2 incorporates country- or facility-specific emission factors alongside non-CO2 equivalence '
+        'multipliers (CH4 and N2O). Crucially, multi-site audits recommend storing explicit factor version strings and bibliographic citations alongside calculated '
+        'emission results so auditors can trace every historical ledger row back to its governing standard.',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.2 Indian Emission Factor Inventories &amp; Sectoral Benchmarks', st['h2']))
+    story.append(Paragraph(
+        'Electricity emission intensity varies widely across national power grids due to differing shares of coal thermal, hydro, nuclear, and solar generation. Applying '
+        'North American or European averages misstates industrial Scope 2 footprints in India by up to 40%. Consequently, Indian facilities adopt the Central Electricity '
+        'Authority (CEA) <i>CO2 Baseline Database for the Indian Power Sector</i> (Version 19) [3], which publishes the combined-margin baseline factor incorporated into '
+        'IPRC CarbonTrack (<b>0.82 kg CO2/kWh</b>), as well as well-to-wheel electric vehicle efficiency projections (<b>0.053 kg CO2/km</b>). Complementing CEA, the Bureau '
+        'of Energy Efficiency (BEE) [5] provides passenger fleet emission factors (<b>0.171 kg CO2/km</b>), while CPHEEO municipal manuals [18] quantify urban water treatment '
+        'and pumping intensity (<b>0.35 kg CO2/kL</b>).',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.3 Machine Learning for Carbon Footprint Forecasting', st['h2']))
+    story.append(Paragraph(
+        'While factor multiplication audits retrospective meter readings, forward-looking energy management requires predictive machine learning models trained on '
+        'multivariate telemetry and environmental indicators [6, 9, 10]. Ordinary Least Squares (OLS) Linear Regression serves as a robust, interpretable baseline when '
+        'emissions scale additively across energy demand and travel distance. Conversely, recursive partitioning methods\u2014Decision Trees, Breiman\'s Random Forests '
+        '[7], and Friedman\'s Gradient Boosting Regressors [8]\u2014capture non-linear interactions across meteorological variables (temperature, humidity), appliance '
+        'duty cycles, and renewable penetration ratios.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Methodological surveys by Kaufman et al. [11] warn against two widespread evaluation errors in empirical ML pipelines: (a) <i>data/target leakage</i>, where '
+        'derived cost or emission-proxy variables leak target information during fitting; and (b) relying solely on shuffled cross-validation over multi-year time-indexed '
+        'records, masking temporal drift. Following best practices [11, 12], IPRC CarbonTrack restricts inputs strictly to the 12 standardized predictors and validates '
+        'all four Scikit-Learn architectures across both random 80/20 (seed=42) and strict chronological 80/20 holdout splits.',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.4 Methodological Challenges: Leakage &amp; Temporal Evaluation', st['h2']))
+    story.append(Paragraph(
+        'Beyond model accuracy alone, environmental time-series datasets demand strict temporal validation discipline. When multi-year records spanning 2024\u20132051 '
+        'are partitioned solely via shuffled random sampling, temporally adjacent days share quasi-identical seasonal profiles across train and test subsets, creating '
+        'optimism bias. Evaluating models additionally under a strict chronological split (training on the initial 80% date window and predicting the final 20% '
+        'future horizon) verifies whether learned weights remain invariant over extended multi-decade projections. Similarly, isolating Z-score standardized feature '
+        'sets from downstream physical emission logs guards against silent unit corruption across statistical pipelines.',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.5 Enterprise Microservice Web Architectures &amp; Comparative Synthesis', st['h2']))
+    story.append(Paragraph(
+        'Production environmental software increasingly decouples browser interfaces from database persistence and Python statistical runtimes [13, 14, 15]. '
+        'React 18 paired with Vite provides lightweight client routing and interactive Chart.js visualization; Express.js over Prisma ORM enforces SQL parameterization '
+        'and RFC 7519 JWT role checks [16, 17]; and FastAPI exposes typed Pydantic inference endpoints over serialized <i>.joblib</i> pipelines. Table 2.1 benchmarks '
+        'these architectural paradigms against existing tracking tools.',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.5.1 Linear Additive vs. Non-Linear Ensemble Modeling Trade-offs', st['h3']))
+    story.append(Paragraph(
+        'In tabular sustainability modeling, practitioner studies frequently default to complex tree ensembles or deep networks without verifying whether underlying '
+        'physical drivers behave additively [6, 9, 10]. As Hastie et al. [6] establish, when target response surfaces are predominantly linear combinations of primary '
+        'predictors (such as grid power draw and fleet haulage distance), Ordinary Least Squares achieves minimum-variance unbiased estimation, whereas axis-aligned '
+        'Decision Trees [7, 8] introduce step-wise quantization variance along diagonal hyperplanes. Benchmarking Linear Regression alongside Decision Tree, '
+        'Random Forest, and Gradient Boosting within a unified automated registry guarantees empirical rigor rather than assuming non-linear superiority a priori.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'From an enterprise software perspective, modern microservice designs pair strongly typed Object-Relational Mapping (Prisma ORM [17]) with decoupled ML '
+        'inference containers (FastAPI [13]) so model retraining or Python runtime upgrades never interrupt transactional activity logging, audit recording, or PDF/Excel '
+        'compliance export delivery in the Node.js API tier [14, 15, 16].',
+        st['body']
+    ))
+
+    t21_rows = [
+        ['Manual Spreadsheet Inventories', 'Scope 1/2/3 manual formulas', 'Absent', 'File-level OS permissions only', 'Stale emission factors & human copy errors'],
+        ['Standalone Python ML Notebooks', 'No transactional activity ledger', 'Scikit-Learn / XGBoost offline', 'None (single-analyst script)', 'No live RBAC web portal or PDF/Excel exports'],
+        ['Generic BI Dashboards (PowerBI)', 'Static warehouse snapshots', 'Limited external scripting', 'Viewer/Editor workspace roles', 'No Mode A Z-score safeguard or auto-calc API'],
+        ['Legacy Monolithic Web Calculators', 'Basic Tier 1 form entry', 'Heuristic averages only', 'Session auth without AuditLog', 'Lacks CEA v19/IPCC lineage & ML prediction'],
+        ['Proposed IPRC CarbonTrack Platform', 'Dual Mode A (ML) + Mode B (CEA/IPCC)', '4 Live FastAPI Regressors (.joblib)', 'HS256 JWT + 3-Role RBAC + AuditLog', 'Full-stack DB, Batch CSV & PDFKit/ExcelJS'],
+    ]
+    add_styled_table(story, st,
+                     'Table 2.1: Comparative Review of Organizational GHG Accounting and Prediction Approaches [1, 4, 9, 12]',
+                     ['Approach / System Class', 'Accounting Scope', 'Predictive Intelligence', 'Security & Auditability', 'Key Limitation / Gap Addressed'],
+                     t21_rows, [105, 95, 95, 95, 97], 'tbl21', summary_last=True)
+
+    story.append(Paragraph(
+        'Taken together, existing tools isolate GHG ledger accounting, leakage-free machine learning benchmarking, and statutory document generation into disconnected '
+        'workflows. IPRC CarbonTrack unifies all three dimensions inside an auditable, role-segregated three-tier web platform tailored for IPRC engineering divisions.',
+        st['body']
+    ))
+
+    story.append(Paragraph('2.6 Critical Synthesis of Identified Research Gaps', st['h2']))
+    story.append(Paragraph(
+        'Synthesizing standards [1, 2, 3, 4] alongside statistical learning theory [6, 7, 8, 11] and microservice engineering references [13, 14, 15, 16, 17] reveals '
+        'four concrete architectural requirements satisfied by the proposed implementation:',
+        st['body']
+    ))
+    for gap_pt in [
+        '<b>Gap 1 — Mixed Scale Corruption:</b> Unseparated dashboards risk applying emission factors to Z-score standardized features. Isolating Mode A (<i>dataset_records</i>) from Mode B (<i>activity_records</i>) eliminates negative or scale-corrupted accounting entries.',
+        '<b>Gap 2 — Unverified Emission Multipliers:</b> Generic western calculators diverge from Indian grid mix. Persisting CEA v19, IPCC 2019, BEE, CPHEEO, and IGA metadata directly inside <i>emission_factors</i> establishes cryptographic source traceability.',
+        '<b>Gap 3 — Chronological Overfitting in Carbon Forecasts:</b> Evaluating regressors solely on shuffled splits masks temporal drift. Adding an 80/20 date-ordered holdout alongside random evaluation validates multi-decade invariance across 2024\u20132051.',
+        '<b>Gap 4 — Audit &amp; Document Silos:</b> Offline Python notebooks lack RBAC governance and compliance exports. Pairing HS256 JWT roles with automated PDFKit and 3-sheet ExcelJS streams turns analytical telemetry into submission-ready records.'
+    ]:
+        story.append(Paragraph('\u2022 ' + gap_pt, st['bullet']))
+
+    story.append(Paragraph(
+        'Addressing all four gaps concurrently differentiates IPRC CarbonTrack from single-tier student calculators. Specifically, maintaining disjoint Mode A and Mode B '
+        'ledgers ensures analytical machine learning experiments never compromise statutory GHG accounting records, while standardized Indian multipliers enable repeatable '
+        'division-level compliance across propulsion testing and facility utilities [1, 3, 18].',
+        st['body']
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 3: DATASET AND PREPROCESSING (Body Pages 8–10)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch3'))
+    story.append(Paragraph('CHAPTER 3: DATASET AND PREPROCESSING', st['chapter']))
+
+    story.append(Paragraph('3.1 Research Baseline Dataset Inventory', st['h2']))
+    story.append(Paragraph(
+        'Mode A exploratory analytics and predictive modeling operate over <i>data/Preprocessed_Carbon_Footprint_Dataset.csv</i>. Programmatic verification via Pandas '
+        'confirms exact baseline dimensions of <b>10,000 rows \u00d7 14 columns</b>, continuous daily dates spanning <b>2024-01-01 to 2051-05-18</b>, <b>0 missing '
+        '(NaN/null) cells</b>, and <b>0 duplicate rows</b>. Furthermore, during end-to-end validation of the web upload workflow using synthetic dataset '
+        '<i>Carbon_Footprint_Synthetic_Test_Dataset_100.csv</i>, two validated 100-row batches were persisted through <i>POST /api/dataset/import</i>, expanding the live '
+        'PostgreSQL <i>dataset_records</i> table to <b>10,200 rows</b> while keeping offline model benchmarking pinned cleanly to the 10,000-row baseline CSV.',
+        st['body']
+    ))
+
+    story.append(Paragraph('3.2 Z-Score Standardization Disclosure and Schema Audit', st['h2']))
+    story.append(Paragraph(
+        'Twelve independent numeric predictors in the baseline dataset are <b>Z-score standardized</b> (empirical mean = 0.0000, sample standard deviation = 1.0001 '
+        'across n = 10,000), while the 14th target column <b>Carbon_Emission_kgCO2</b> preserves physical unstandardized mass in kilograms of CO2: mean = <b>22.9560 kg CO2</b>, '
+        'standard deviation = <b>9.7383 kg CO2</b>, minimum = <b>1.1868 kg CO2</b>, 25th percentile = <b>15.7345 kg CO2</b>, median = <b>22.6234 kg CO2</b>, '
+        '75th percentile = <b>29.5339 kg CO2</b>, and maximum = <b>55.9616 kg CO2</b>. Table 3.1 documents every schema column verified from both CSV statistics and '
+        '<i>datasetController.js</i> (`DATA_DICTIONARY`).',
+        st['body']
+    ))
+
+    t31_rows = [
+        ['Date', 'Temporal Index', '2024-01-01 to 2051-05-18', '\u2014 (0 nulls)', '\u2014'],
+        ['Energy_Usage_kWh', 'Z-Score Predictor', '-1.7181 to +1.7578', '0.0000 \u00b1 1.0001', '+0.7048'],
+        ['Transportation_Distance_km', 'Z-Score Predictor', '-1.7435 to +1.7125', '0.0000 \u00b1 1.0001', '+0.5897'],
+        ['Renewable_Energy_Usage_percent', 'Z-Score Predictor', '-1.7191 to +1.7354', '0.0000 \u00b1 1.0001', '+0.0102'],
+        ['Vehicle_Type_Walking', 'Standardized Binary', '-0.5747 to +1.7399', '0.0000 \u00b1 1.0001', '+0.0078'],
+        ['Fuel_Usage_Liters', 'Z-Score Predictor', '-1.7250 to +1.7321', '0.0000 \u00b1 1.0001', '+0.0067'],
+        ['Vehicle_Type_Car', 'Standardized Binary', '-0.5920 to +1.6892', '0.0000 \u00b1 1.0001', '+0.0014'],
+        ['Humidity_percent', 'Z-Score Predictor', '-1.7435 to +1.7310', '0.0000 \u00b1 1.0001', '+0.0009'],
+        ['Temperature_C', 'Z-Score Predictor', '-1.7450 to +1.7230', '0.0000 \u00b1 1.0001', '-0.0078'],
+        ['Waste_Generated_kg', 'Z-Score Predictor', '-1.7370 to +1.7413', '0.0000 \u00b1 1.0001', '-0.0088'],
+        ['Vehicle_Type_Electric Vehicle', 'Standardized Binary', '-0.5777 to +1.7311', '0.0000 \u00b1 1.0001', '-0.0099'],
+        ['Building_Type_Residential', 'Standardized Binary', '-0.9950 to +1.0050', '0.0000 \u00b1 1.0001', '-0.0126'],
+        ['Smart_Appliance_Usage_hours', 'Z-Score Predictor', '-1.7314 to +1.7588', '0.0000 \u00b1 1.0001', '-0.0131'],
+        ['Carbon_Emission_kgCO2', 'Physical Target (kg CO2)', '1.1868 to 55.9616', '22.9560 \u00b1 9.7383', '1.0000 (Target)'],
+    ]
+    add_styled_table(story, st,
+                     'Table 3.1: Verified Statistical Audit of All 14 Columns in Preprocessed_Carbon_Footprint_Dataset.csv (n = 10,000)',
+                     ['Column Name', 'Statistical Nature', 'Observed Min \u2013 Max', 'Mean \u00b1 Std Dev', 'Target Pearson r'],
+                     t31_rows, [142, 95, 98, 82, 70], 'tbl31', summary_last=True)
+
+    add_figure(story, st, 'fig5_distribution.png',
+               'Fig. 2: Observed frequency histogram (Panel A) and residential vs. commercial box distribution (Panel B) of physical target Carbon_Emission_kgCO2 (n = 10,000).',
+               'fig5', w_inch=6.25, h_inch=2.45)
+
+    story.append(Paragraph('3.3 Multivariate Correlation Structure and Stratified Breakdowns', st['h2']))
+    story.append(Paragraph(
+        'Computing the full 13\u00d713 Pearson correlation matrix (Fig. 3) reveals that <b>Energy_Usage_kWh</b> (r = +0.7048) and <b>Transportation_Distance_km</b> '
+        '(r = +0.5897) act as the two primary orthogonal drivers of daily carbon emissions (Fig. 4). Continuous predictors show near-zero cross-correlation, avoiding '
+        'multicollinearity distortion, whereas the mild negative off-diagonal cluster across <i>Car</i>, <i>EV</i>, and <i>Walking</i> reflects standardized one-hot '
+        'exclusivity against the omitted public-transit reference level.',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig6_correlation.png',
+               'Fig. 3: Full 13\u00d713 Pearson correlation heatmap (Panel A) and ranked predictor correlations against Carbon_Emission_kgCO2 (Panel B).',
+               'fig6', w_inch=6.25, h_inch=2.55)
+
+    add_figure(story, st, 'fig7_scatter_drivers.png',
+               'Fig. 4: Empirical scatter and OLS trendlines showing linear dependence of Carbon_Emission_kgCO2 on standardized energy usage (r = +0.705) and transport distance (r = +0.590).',
+               'fig7', w_inch=6.25, h_inch=2.40)
+
+    t32_rows = [
+        ['Transport: Passenger Car (Z > 0)', '2,595', '22.9788 kg', '59,630.04 kg CO2'],
+        ['Transport: Electric Vehicle (Z > 0)', '2,502', '22.7893 kg', '57,018.84 kg CO2'],
+        ['Transport: Walking / Non-Motorized (Z > 0)', '2,483', '23.0876 kg', '57,326.61 kg CO2'],
+        ['Transport: Public / Other Reference (Z \u2264 0)', '2,420', '22.9688 kg', '55,584.38 kg CO2'],
+        ['Building: Residential (Z > 0) vs. Commercial (Z \u2264 0)', '4,975 / 5,025', '22.8329 / 23.0778 kg', 'Total: 229,559.86 kg'],
+        ['Renewable Quartiles (Q1 / Q2 / Q3 / Q4)', '3,088 / 1,941 / 1,936 / 3,035', '22.83 / 22.92 / 23.08 / 23.03', 'r = +0.0102 vs. Target'],
+    ]
+    add_styled_table(story, st,
+                     'Table 3.2: Observed Vehicle Mode, Building Sector, and Renewable Quartile Breakdown (Preprocessed CSV, n = 10,000)',
+                     ['Cohort Stratum', 'Observation Count', 'Mean Carbon Emission', 'Aggregate / Comparative Note'],
+                     t32_rows, [175, 92, 108, 112], 'tbl32')
+
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY (Body Pages 11–14)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch4'))
+    story.append(Paragraph('CHAPTER 4: SYSTEM DESIGN AND METHODOLOGY', st['chapter']))
+
+    story.append(Paragraph('4.1 Decoupled Three-Tier Microservice Architecture', st['h2']))
+    story.append(Paragraph(
+        'IPRC CarbonTrack implements a three-tier microservice topology orchestratable natively or via <i>docker-compose.yml</i>. The <b>Presentation Tier</b> '
+        '(React 18.3, Vite 5.4, Tailwind CSS 3.4, Chart.js 4.4) serves interactive analytics on port 3000; the <b>Application Tier</b> (Node.js + Express 4.21) '
+        'coordinates REST routing, JWT RBAC authorization, batch CSV validation, and PDFKit/ExcelJS exports on port 5000; and the <b>Data &amp; Intelligence Tier</b> '
+        'couples PostgreSQL (via Prisma ORM 5.22) with a dedicated Python FastAPI microservice on port 8000 hosting trained Scikit-Learn estimators.',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig2_architecture.png',
+               'Fig. 5: Decoupled Three-Tier Enterprise Microservice Architecture connecting React SPA, Express/Prisma API, PostgreSQL, and FastAPI ML Engine.',
+               'fig2', w_inch=6.25, h_inch=2.85)
+
+    story.append(Paragraph('4.2 Relational PostgreSQL Schema and REST API Endpoints', st['h2']))
+    story.append(Paragraph(
+        'The database schema in <i>backend/prisma/schema.prisma</i> defines <b>13 relational models</b> and <b>8 enumerations</b>. Transactional models '
+        '(<i>User</i>, <i>Department</i>, <i>ActivityRecord</i>, <i>EmissionFactor</i>, <i>EmissionResult</i>, <i>PredictionHistory</i>, <i>AuditLog</i>, '
+        '<i>ImportLog</i>) employ UUID primary keys, while <i>DatasetRecord</i> uses indexed integer keys alongside composite B-tree indexes on <i>date</i> and '
+        '<i>datasetId</i>. Specialized domain tables (<i>RenewableEnergyRecord</i>, <i>WaterRecord</i>, <i>WasteRecord</i>, <i>MaterialRecord</i>) and '
+        '<i>Recommendation</i> governance models complete the schema (Fig. 6, Table 4.1).',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig3_erd.png',
+               'Fig. 6: Normalized PostgreSQL Entity-Relationship Schema illustrating key Prisma models and one-to-many foreign key constraints.',
+               'fig3', w_inch=6.25, h_inch=2.95)
+
+    t41_rows = [
+        ['/api/auth/*', 'User, Department, AuditLog', 'Public + Protected (/me)', 'Login, Registration, Department List, Profile'],
+        ['/api/dashboard/*', 'DatasetRecord, ActivityRecord', 'Any Valid JWT', 'Filtered KPIs, Yearly/Monthly Trends, Breakdowns'],
+        ['/api/dataset/*', 'DatasetRecord, UploadedDataset, ImportLog', 'JWT; Import: ADMIN/OFFICER', '14-Col Dictionary, Paginated Query, 50MB CSV Import'],
+        ['/api/analytics/*', 'DatasetRecord', 'Any Valid JWT', '13x13 Pearson Matrix, Scatter Samples, Clean Quartiles'],
+        ['/api/activities/*', 'ActivityRecord, EmissionResult, AuditLog', 'Write: ADMIN/OFFICER; Del: ADMIN', 'Mode B Activity CRUD & Auto Factor Multiplication'],
+        ['/api/emission-factors/*', 'EmissionFactor', 'Mutate: ADMIN/OFFICER', 'Verified CEA/IPCC Factor Registry Management'],
+        ['/api/predictions/*', 'PredictionHistory, ModelMetadata', 'Train: ADMIN Only', 'FastAPI Model List, Inference, Retraining Trigger'],
+        ['/api/recommendations/*', 'Recommendation', 'Mutate: ADMIN/OFFICER', 'Mitigation Recommendations & Status Tracking'],
+        ['/api/reports/*', 'DatasetRecord, ActivityRecord, EmissionFactor', 'Any Valid JWT (?token supported)', 'Summary JSON, PDFKit Audit PDF, 3-Sheet ExcelJS'],
+        ['/api/users/*', 'User, AuditLog', 'ADMIN Only', 'User Roster Governance & Immutable Audit Trail'],
+    ]
+    add_styled_table(story, st,
+                     'Table 4.1: Mounted Express REST API Route Groups, Prisma Models, and RBAC Authorization Policies',
+                     ['Route Prefix', 'Primary Prisma Models', 'RBAC Policy', 'Implemented Functional Capability'],
+                     t41_rows, [92, 128, 102, 165], 'tbl41')
+
+    story.append(Paragraph('4.3 Cryptographic Security, RBAC &amp; Mode B Accounting Pipeline', st['h2']))
+    story.append(Paragraph(
+        'Figure 7 details the JWT security sequence inside <i>authController.js</i> and <i>middleware/auth.js</i>. User passwords undergo 10-round <i>bcryptjs</i> '
+        'verification prior to signing HS256 JWT tokens with 7-day validity. Middleware inspects Bearer Authorization headers (or <i>?token=</i> query parameters for '
+        'direct statutory report downloads) and enforces strict role gates across <b>ADMIN</b>, <b>OFFICER</b>, and <b>ANALYST</b> accounts. Figure 8 illustrates the '
+        'Mode B activity pipeline that resolves an active <i>EmissionFactor</i> and commits physical CO2 and CO2e totals atomically.',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig4_auth_flow.png',
+               'Fig. 7: Sequence flow for bcryptjs verification, HS256 JWT issuance, RBAC enforcement, and ML service delegation.',
+               'fig4', w_inch=6.25, h_inch=2.60)
+
+    add_figure(story, st, 'fig8_modeb_workflow.png',
+               'Fig. 8: Mode B operational activity-to-CO2 calculation pipeline and 10 seeded authoritative emission factors across six categories.',
+               'fig8', w_inch=6.25, h_inch=2.45)
+
+    story.append(Paragraph('4.4 Batch CSV Ingestion, Export Pipeline &amp; Frontend Module Map', st['h2']))
+    story.append(Paragraph(
+        'As summarized in Fig. 9 and Table 4.2, <i>DataImport.jsx</i> validates 14 expected headers client-side via PapaParse before posting buffers up to 50 MB via '
+        'Multer memory storage to <i>datasetController.js</i>, which persists batches of 1,000 rows via Prisma <i>createMany()</i>. All 15 routed pages in <i>App.jsx</i> '
+        'connect to Express endpoints via Axios interceptors handling automatic token injection and 401 session redirects.',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig12_ingestion_pipeline.png',
+               'Fig. 9: Validated batch CSV ingestion workflow (PapaParse + Multer + chunked createMany) and statutory PDFKit/ExcelJS export pipeline.',
+               'fig12', w_inch=6.25, h_inch=2.45)
+
+    t42_rows = [
+        ['/overview', 'Overview.jsx', 'KPI Cards, Year/Vehicle/Building Filters, Chart.js Trends & Histogram'],
+        ['/dataset-explorer & /import', 'DatasetExplorer.jsx, DataImport.jsx', 'Paginated 14-Col Table, Data Dictionary, 50MB Chunked CSV Upload'],
+        ['/activity-monitoring', 'ActivityMonitoring.jsx', 'Mode B 6-Category Physical Activity Entry, Scope Breakdown & CRUD'],
+        ['/energy, /fuel, /transportation, /waste, /renewable-energy', 'Domain Analytics Pages (5)', 'Sector-wise Charts, Scatter Plots, & Renewable Clean Quartile Views'],
+        ['/carbon-analytics & /prediction', 'CarbonEmissionAnalytics.jsx, PredictionInsights.jsx', '13x13 Correlation Matrix, FastAPI Model Benchmarks & Live Prediction'],
+        ['/recommendations, /reports, /users, /settings', 'Governance & Export Views (4)', 'Mitigation Status, PDFKit/ExcelJS Exports, ADMIN Audit Logs & Config'],
+    ]
+    add_styled_table(story, st,
+                     'Table 4.2: Implemented React 18 SPA Routes Mapped to Frontend Components and Backend Capabilities',
+                     ['Route Path(s)', 'Source Component(s)', 'Core Functional Implementation'],
+                     t42_rows, [132, 138, 217], 'tbl42')
+
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 5: MATHEMATICAL FORMULATION (Body Pages 15–17)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch5'))
+    story.append(Paragraph('CHAPTER 5: MATHEMATICAL FORMULATION', st['chapter']))
+
+    story.append(Paragraph('5.1 Mode A Z-Score Feature Standardization', st['h2']))
+    story.append(Paragraph(
+        'Every continuous predictor x<sub>i,j</sub> across the 12 feature dimensions in Mode A is normalized relative to its baseline cohort mean '
+        '\u03bc<sub>j</sub> and standard deviation \u03c3<sub>j</sub> via zero-mean unit-variance Z-score transformation:',
+        st['body']
+    ))
+    story.append(Paragraph('z<sub>i,j</sub> = (x<sub>i,j</sub> \u2212 \u03bc<sub>j</sub>) / \u03c3<sub>j</sub>   \u21d2   E[z<sub>\u00b7,j</sub>] = 0,   Std(z<sub>\u00b7,j</sub>) \u2248 1', st['eq']))
+    story.append(Paragraph(
+        'Because standardization centers each predictor around zero, negative values z<sub>i,j</sub> &lt; 0 indicate below-average consumption relative to the cohort, '
+        'never negative physical flow. In contrast, target mass y<sub>i</sub> = Carbon_Emission_kgCO2 remains unstandardized in physical kilograms of CO2.',
+        st['body']
+    ))
+
+    story.append(Paragraph('5.2 Mode B Deterministic GHG Accounting &amp; Worked Facility Calculation', st['h2']))
+    story.append(Paragraph(
+        'For any Mode B operational record r with physical activity quantity Q<sub>r</sub> linked to active emission factor EF<sub>k</sub> and radiative equivalence '
+        'multiplier M<sub>k</sub>, <i>activityController.js</i> computes both direct CO2 and total CO2-equivalent emissions:',
+        st['body']
+    ))
+    story.append(Paragraph('E<sub>CO2,r</sub> = Q<sub>r</sub> \u00d7 EF<sub>k</sub> ,      E<sub>CO2e,r</sub> = E<sub>CO2,r</sub> \u00d7 M<sub>k</sub>', st['eq']))
+    story.append(Paragraph(
+        'Facility-wide statutory totals aggregate records across GHG Protocol boundaries S \u2208 {SCOPE_1, SCOPE_2, SCOPE_3} and across IPRC departments:',
+        st['body']
+    ))
+    story.append(Paragraph('E<sub>total</sub>(S) = \u03a3<sub>r \u2208 S</sub> E<sub>CO2,r</sub> ,      E<sub>campus</sub> = E<sub>total</sub>(Scope 1) + E<sub>total</sub>(Scope 2) + E<sub>total</sub>(Scope 3)', st['eq']))
+    story.append(Paragraph(
+        '<i>Verified Facility Numerical Example (from testSuite.js &amp; comprehensiveDeploymentAudit.js):</i> Logging Q = 2,000 kWh of Scope 2 electricity under CEA '
+        'India Baseline v19 (EF = 0.82 kg CO2/kWh, M = 1.00) yields E<sub>CO2</sub> = 2,000 \u00d7 0.82 = <b>1,640.0 kg CO2</b>. Similarly, updating a 5,000 kWh test '
+        'entry (4,100.0 kg CO2) to 6,000 kWh deterministically recomputes E<sub>CO2</sub> = <b>4,920.0 kg CO2</b> and updates the corresponding <i>EmissionResult</i> record.',
+        st['body']
+    ))
+
+    story.append(Paragraph('5.3 Pearson Correlation &amp; Clean Energy Quartile Partitioning', st['h2']))
+    story.append(Paragraph(
+        'In <i>analyticsController.js</i>, pairwise linear dependence across N observations (N = 2,000 in runtime API; N = 10,000 in full CSV analysis) is quantified '
+        'via the sample Pearson product-moment correlation coefficient r(X, Y):',
+        st['body']
+    ))
+    story.append(Paragraph('r(X, Y) = [ N \u03a3 x<sub>i</sub>y<sub>i</sub> \u2212 (\u03a3 x<sub>i</sub>)(\u03a3 y<sub>i</sub>) ] / \u221a[ (N \u03a3 x<sub>i</sub><super>2</super> \u2212 (\u03a3 x<sub>i</sub>)<super>2</super>) (N \u03a3 y<sub>i</sub><super>2</super> \u2212 (\u03a3 y<sub>i</sub>)<super>2</super>) ]', st['eq']))
+    story.append(Paragraph(
+        'Furthermore, <i>getRenewableAnalytics</i> stratifies standardized renewable utilization Z<sub>ren</sub> into four standard normal quartile intervals\u2014Q1 '
+        '(Z &lt; -0.67), Q2 (-0.67 \u2264 Z &lt; 0), Q3 (0 \u2264 Z &lt; 0.67), and Q4 (Z \u2265 0.67)\u2014aggregating mean CO2 intensity inside PostgreSQL.',
+        st['body']
+    ))
+
+    story.append(Paragraph('5.4 Predictive Regression Formulations (Mode A ML Engine)', st['h2']))
+    story.append(Paragraph(
+        'Given 12-dimensional standardized input vector <b>z</b><sub>i</sub> \u2208 R<super>12</super>, <i>train_models.py</i> evaluates four regression architectures '
+        'without derived target leakage:',
+        st['body']
+    ))
+    story.append(Paragraph(
+        '<b>1. Ordinary Least Squares Linear Regression:</b> Estimates intercept \u03b2<sub>0</sub> and linear weights <b>w</b> \u2208 R<super>12</super> minimizing '
+        'L2 prediction residuals; normalized feature attribution weight I<sub>j</sub> reflects fractional coefficient magnitude:',
+        st['body']
+    ))
+    story.append(Paragraph('<i>y</i><sub>pred,i</sub> = \u03b2<sub>0</sub> + <b>w</b><super>T</super><b>z</b><sub>i</sub> ,     min<sub>\u03b20,w</sub> \u03a3<sub>i=1..n</sub> (<i>y</i><sub>i</sub> \u2212 <i>y</i><sub>pred,i</sub>)<super>2</super> ,     I<sub>j</sub> = |w<sub>j</sub>| / \u03a3<sub>m=1..12</sub> |w<sub>m</sub>|', st['eq']))
+    story.append(Paragraph(
+        '<b>2. Decision Tree &amp; Random Forest Regressors:</b> Decision Tree (<i>max_depth = 8</i>) recursively partitions feature space at split (j, s) maximizing '
+        'intra-node mean squared error reduction \u0394MSE. Random Forest averages B = 100 decorrelated bootstrap trees (<i>max_depth = 12</i>) to stabilize leaf variance:',
+        st['body']
+    ))
+    story.append(Paragraph('<i>y</i><sub>RF</sub>(<b>z</b>) = (1 / B) \u03a3<sub>b=1..B</sub> T<sub>b</sub>(<b>z</b>) ,     \u0394MSE = MSE(parent) \u2212 [ (n<sub>L</sub>/n)MSE<sub>L</sub> + (n<sub>R</sub>/n)MSE<sub>R</sub> ]', st['eq']))
+    story.append(Paragraph(
+        '<b>3. Gradient Boosting Regressor:</b> Constructs an additive sequence of M = 150 shallow trees (<i>learning_rate \u03b7 = 0.08, max_depth = 5</i>), fitting '
+        'each tree h<sub>m</sub> to negative squared-error pseudo-residuals r<sub>i,m</sub>:',
+        st['body']
+    ))
+    story.append(Paragraph('F<sub>m</sub>(<b>z</b>) = F<sub>m\u22121</sub>(<b>z</b>) + \u03b7 \u00b7 h<sub>m</sub>(<b>z</b>) ,     r<sub>i,m</sub> = <i>y</i><sub>i</sub> \u2212 F<sub>m\u22121</sub>(<b>z</b><sub>i</sub>)', st['eq']))
+
+    story.append(Paragraph('5.5 Dual-Split Partitioning, Error Metrics &amp; Clamped Inference', st['h2']))
+    story.append(Paragraph(
+        'To test both isotropic generalization and temporal stability, each model is evaluated across two disjoint splits: (a) a reproducible random 80/20 split '
+        '(n<sub>train</sub> = 8,000, n<sub>test</sub> = 2,000, <i>random_state = 42</i>), and (b) a chronological date-sorted split assigning the earliest 8,000 dates to '
+        'training and the latest 2,000 dates to holdout validation. Performance is reported via R<super>2</super>, MAE, MSE, and RMSE:',
+        st['body']
+    ))
+    story.append(Paragraph('R<super>2</super> = 1 \u2212 [\u03a3 (<i>y</i><sub>i</sub> \u2212 <i>y</i><sub>pred,i</sub>)<super>2</super> / \u03a3 (<i>y</i><sub>i</sub> \u2212 <i>y</i><sub>mean</sub>)<super>2</super>] ,    MAE = (1/n)\u03a3|<i>y</i><sub>i</sub> \u2212 <i>y</i><sub>pred,i</sub>| ,    RMSE = \u221a[ (1/n)\u03a3(<i>y</i><sub>i</sub> \u2212 <i>y</i><sub>pred,i</sub>)<super>2</super> ]', st['eq']))
+    story.append(Paragraph(
+        'During FastAPI inference (<i>POST /predict</i> in <i>ml-service/app.py</i>), predicted emissions are non-negativity clamped via '
+        '<i>y</i><sub>out</sub> = max(0.0, round(<i>y</i><sub>pred</sub>, 3)) and accompanied by feature-wise contribution scores c<sub>j</sub> = round(10.0 \u00d7 z<sub>j</sub> \u00d7 I<sub>j</sub>, 3) '
+        'persisted directly inside PostgreSQL <i>PredictionHistory</i>.',
+        st['body']
+    ))
+
+    story.append(Paragraph('5.6 Algorithmic Procedures &amp; Computational Complexity', st['h2']))
+    story.append(Paragraph(
+        'The end-to-end execution in <i>train_models.py</i> proceeds deterministically through six reproducible stages: (1) load CSV and parse ISO dates; '
+        '(2) construct 80/20 random split (seed=42) alongside date-sorted 80/20 chronological split; (3) fit OLS Linear Regression, DecisionTreeRegressor(max_depth=8), '
+        'RandomForestRegressor(n_estimators=100, max_depth=12), and GradientBoostingRegressor(n_estimators=150, lr=0.08, max_depth=5); (4) evaluate test R<super>2</super>, '
+        'MAE, MSE, RMSE, and chronological counterparts; (5) extract normalized feature weights and persist individual <i>.joblib</i> artifacts; and (6) promote the '
+        'highest-R<super>2</super> estimator to <i>active_model.joblib</i> alongside <i>models_metadata.json</i>.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Computationally, runtime Pearson correlation over d = 13 fields and N = 2,000 sampled records executes in O(N \u00b7 d<super>2</super>) time in Node.js, '
+        'completing within a single sub-50 ms request cycle, while chunked CSV batch insertion amortizes PostgreSQL round-trips via O(ceil(M / 1000)) Prisma '
+        '<i>createMany()</i> transactions for M uploaded rows. Table 5.1 summarizes the exact estimator hyperparameters configured in <i>train_models.py</i> alongside '
+        'Mode B category-level relational side-tables populated during operational ingestion.',
+        st['body']
+    ))
+
+    t51_rows = [
+        ['Linear Regression (OLS)', 'Default (fit_intercept=True, 12 Z features)', 'O(p^2 n) closed-form / SVD solver; promotes weights w_j'],
+        ['Decision Tree Regressor', 'max_depth=8, random_state=42', 'Single axis-aligned MSE-reduction regression tree'],
+        ['Random Forest Regressor', 'n_estimators=100, max_depth=12, seed=42', 'Bootstrap aggregation over 100 decorrelated depth-12 trees'],
+        ['Gradient Boosting Regressor', 'n_estimators=150, lr=0.08, max_depth=5', 'Additive forward stagewise shrinkage over squared residuals'],
+        ['Mode B ENERGY / WATER / WASTE', 'Primary EmissionResult + typed child tables', 'Persists RenewableEnergyRecord, WaterRecord, WasteRecord, MaterialRecord'],
+    ]
+    add_styled_table(story, st,
+                     'Table 5.1: ML Training Hyperparameters and Mode B Domain Side-Table Persistence Specifications',
+                     ['Pipeline Component / Model', 'Verified Configuration / Parameters', 'Mathematical / Persistence Behavior'],
+                     t51_rows, [135, 165, 187], 'tbl51')
+
+    story.append(Paragraph('5.7 Audit Event Serialization &amp; Statutory Report Summation Logic', st['h2']))
+    story.append(Paragraph(
+        'Every state-changing API transaction (authentication, activity creation/update/deletion, emission factor update, ML prediction/retraining, recommendation '
+        'transition, and CSV batch import) writes an immutable tuple to PostgreSQL <i>AuditLog</i> recording actor identity, action identifier, affected entity name, '
+        'serial details, and UTC timestamp. Simultaneously, <i>reportController.js</i> compiles statutory Scope totals directly inside PostgreSQL before rendering:',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'E<sub>total</sub> = \u03a3<sub>s\u2208{1,2,3}</sub> \u03a3<sub>k\u2208Scope(s)</sub> ( Q<sub>k</sub> \u00d7 EF<sub>k</sub> \u00d7 M<sub>CO2e,k</sub> ) ,     '
+        'S<sub>s</sub>(%) = ( E<sub>s</sub> / E<sub>total</sub> ) \u00d7 100',
+        st['eq']
+    ))
+    story.append(Paragraph(
+        'Both <i>PDFKit</i> (streaming binary <i>application/pdf</i> tables grouped by division and GHG Scope with embedded Mode A standardization notices) and '
+        '<i>ExcelJS</i> (constructing three formatted worksheets covering executive summaries, Mode B activity ledgers, and factor lineage metadata) execute '
+        'deterministically from the same transactional Prisma query snapshot, eliminating discrepancy between tabular spreadsheets and signed PDF submissions. '
+        'Furthermore, scenario sensitivity analysis in <i>PredictionInsights.jsx</i> evaluates relative footprint reduction using linear difference shifts '
+        '\u0394<i>y</i><sub>pred</sub> = <i>y</i><sub>pred,scen</sub> \u2212 <i>y</i><sub>pred,base</sub> = <b>w</b><super>T</super>(\u0394<b>z</b>), giving plant officers an exact, closed-form '
+        'quantification of load shedding or renewable substitution impacts prior to committing test-stand schedules.',
+        st['body']
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION (Body Pages 18–23)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch6'))
+    story.append(Paragraph('CHAPTER 6: EXPERIMENTAL RESULTS AND EVALUATION', st['chapter']))
+
+    story.append(Paragraph('6.1 Experimental Runtime &amp; Multi-Decade Baseline Trends', st['h2']))
+    story.append(Paragraph(
+        'All benchmarks, live API integration tests, and production frontend compilations were executed directly against the running three-tier stack: '
+        'Vite 5.4.21 React client on port 3000, Express 4.21 API on port 5000 connected to PostgreSQL via Prisma ORM 5.22, and the FastAPI Uvicorn ML engine '
+        'on port 8000 running inside the workspace virtual environment (<i>.venv</i>). Table 6.1 summarizes multi-year baseline statistics queried across representative '
+        'years of the 2024\u20132051 CSV cohort, confirming stationary annual mean intensity (~22.60\u201323.35 kg CO2) across leap-year and partial terminal windows.',
+        st['body']
+    ))
+
+    t61a_rows = [
+        ['2024 (Initial Baseline Year)', '366', '22.602 kg CO2', '8,272.3 kg CO2', '50.01 kg CO2'],
+        ['2028 (Near-Term Horizon)', '366', '23.033 kg CO2', '8,429.9 kg CO2', '51.28 kg CO2'],
+        ['2032 / 2036 (Mid-Term Window)', '366 / 366', '22.877 / 23.351 kg', '8,372.9 / 8,546.6 kg', '49.06 / 47.91 kg'],
+        ['2040 / 2044 (Long-Term Horizon)', '366 / 366', '23.188 / 22.685 kg', '8,486.7 / 8,302.6 kg', '51.50 / 50.37 kg'],
+        ['2048 / 2051* (Terminal Window)', '366 / 138*', '22.713 / 22.840 kg', '8,313.1 / 3,152.0 kg', '47.64 / 45.54 kg'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.1: Observed Longitudinal Baseline Carbon Statistics Across Representative Years (Preprocessed CSV, *2051 ends May 18)',
+                     ['Calendar Horizon', 'Records (n)', 'Annual Mean', 'Annual Total CO2', 'Observed Peak'],
+                     t61a_rows, [138, 65, 92, 108, 84], 'tbl61')
+
+    story.append(Paragraph('6.2 Multi-Model Machine Learning Regression Benchmark', st['h2']))
+    story.append(Paragraph(
+        'Table 6.2 and Fig. 10 report comparative regression performance extracted verbatim from <i>ml-service/models/models_metadata.json</i> across 8,000 training '
+        'and 2,000 test observations. <b>Linear Regression</b> achieves top performance on both validation methodologies\u2014Random Test R<super>2</super> = <b>0.8534</b>, '
+        'MAE = <b>2.9609 kg CO2</b>, MSE = <b>14.1765</b>, RMSE = <b>3.7652 kg CO2</b>, and Chronological R<super>2</super> = <b>0.8451</b> (Chrono RMSE = <b>3.8156 kg</b>)\u2014'
+        'and is automatically serialized as <i>active_model.joblib</i>.',
+        st['body']
+    ))
+
+    t62a_rows = []
+    for m in meta['models']:
+        name = m['modelName'] + (' (Active)' if m.get('isActive') else '')
+        t62a_rows.append([
+            name, m['algorithm'],
+            f"{m['r2Score']:.4f}", f"{m['mae']:.4f}", f"{m['mse']:.4f}",
+            f"{m['rmse']:.4f}", f"{m['chronoR2Score']:.4f}", f"{m['chronoRmse']:.4f}"
+        ])
+    add_styled_table(story, st,
+                     'Table 6.2: Empirical ML Regression Performance on Random (80/20) and Chronological Splits (n_train=8000, n_test=2000)',
+                     ['Model Name', 'Scikit-Learn Class', 'Test R\u00b2', 'MAE (kg)', 'MSE', 'RMSE (kg)', 'Chrono R\u00b2', 'Chrono RMSE'],
+                     t62a_rows, [88, 118, 45, 45, 46, 48, 47, 50], 'tbl62')
+
+    add_figure(story, st, 'fig9_ml_benchmark.png',
+               'Fig. 10: Side-by-side comparison of random/chronological R\u00b2 scores (Panel A) and MAE/RMSE errors (Panel B) across four models.',
+               'fig9', w_inch=6.25, h_inch=2.50)
+
+    story.append(Paragraph('6.3 Parity, Residual Diagnostics &amp; Fitted OLS Parameters', st['h2']))
+    story.append(Paragraph(
+        'Evaluating <i>active_model.joblib</i> across all 2,000 random test records (Fig. 11) yields tightly symmetric errors centered at zero residual mean without '
+        'heteroscedastic fanning. Table 6.3 documents the exact fitted OLS intercept (\u03b2<sub>0</sub> = 22.9549 kg CO2), dominant feature slopes (+6.8606 kg CO2 per '
+        'unit energy Z-score and +5.7757 kg CO2 per transport distance Z-score), and empirical absolute test error quantiles (median error = 2.399 kg CO2; 90th percentile = 6.491 kg).',
+        st['body']
+    ))
+
+    add_figure(story, st, 'fig10_residuals.png',
+               'Fig. 11: Observed vs. predicted parity plot (Panel A) and residual error histogram (Panel B) for active Linear Regression (n = 2,000 test samples).',
+               'fig10', w_inch=6.25, h_inch=2.45)
+
+    t63a_rows = [
+        ['Intercept (\u03b20) & Top Slopes', 'Intercept: 22.9549 kg CO2', 'Energy: +6.8606 kg/\u03c3', 'Transport: +5.7757 kg/\u03c3'],
+        ['Secondary Slopes (Signed)', 'Waste: -0.0803 | Fuel: -0.0484', 'Renew %: +0.0448 | Car: +0.0489', 'Walk: +0.0318 | Resid: +0.0165'],
+        ['Test Absolute Error Quantiles', 'P25: 1.094 kg | P50: 2.399 kg', 'P75: 4.282 kg | P90: 6.491 kg', 'P95: 7.531 kg | P99: 9.384 kg'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.3: Active OLS Parameter Estimates and Test-Split Absolute Error Quantiles (n = 2,000)',
+                     ['Diagnostic Category', 'Primary Metric / Value', 'Secondary Metric / Value', 'Tail / Auxiliary Metric'],
+                     t63a_rows, [130, 122, 120, 115], 'tbl63')
+
+    story.append(Paragraph('6.4 Comparative Feature Attribution Across ML Paradigms', st['h2']))
+    story.append(Paragraph(
+        'Table 6.4 and Fig. 12 verify cross-model feature agreement: <b>Energy_Usage_kWh</b> (53.02%\u201357.72%) and <b>Transportation_Distance_km</b> (37.68%\u201344.64%) '
+        'jointly supply over 91% of predictive attribution across every algorithm, whereas auxiliary behavioral and weather dimensions remain below 1.4%.',
+        st['body']
+    ))
+
+    top_feats = [
+        ('Energy_Usage_kWh', 'Energy Usage (Z)'),
+        ('Transportation_Distance_km', 'Transport Distance (Z)'),
+        ('Waste_Generated_kg', 'Waste Generated (Z)'),
+        ('Fuel_Usage_Liters', 'Fuel Usage (Z)'),
+        ('Renewable_Energy_Usage_percent', 'Renewable Share (Z)'),
+        ('Smart_Appliance_Usage_hours', 'Smart Appliance (Z)'),
+    ]
+    t64a_rows = []
+    for fkey, flbl in top_feats:
+        vals = [f"{m['featureImportances'].get(fkey, 0.0)*100:.2f}%" for m in meta['models']]
+        t64a_rows.append([flbl] + vals)
+    add_styled_table(story, st,
+                     'Table 6.4: Top-6 Relative Feature Attribution Weights Across All Four Evaluated ML Architectures',
+                     ['Standardized Predictor', 'Linear Regression', 'Decision Tree', 'Random Forest', 'Gradient Boosting'],
+                     t64a_rows, [145, 85, 85, 85, 87], 'tbl64')
+
+    add_figure(story, st, 'fig11_feature_importance.png',
+               'Fig. 12: Comparative standardized feature importance percentages across Linear Regression, Decision Tree, Random Forest, and Gradient Boosting.',
+               'fig11', w_inch=6.25, h_inch=2.45)
+
+    story.append(Paragraph('6.5 Production Compilation, CSV Ingestion &amp; 40-Check Deployment Audit', st['h2']))
+    story.append(Paragraph(
+        'Production build verification via <i>vite build</i> compiled <b>1,671 frontend modules</b> cleanly in <b>3.48 s</b> (`dist/index.html` 1.12 kB, CSS 31.89 kB, '
+        'JS bundle 598.51 kB). Live end-to-end execution of <i>comprehensiveDeploymentAudit.js</i> recorded <b>35 PASS</b> and <b>5 FAIL</b> across 40 checks '
+        '(Table 6.5). Every failing assertion traced strictly to hardcoded baseline comparisons expecting 10,000 rows, because prior validated CSV batch uploads '
+        'legitimately persisted 200 synthetic rows into PostgreSQL (total <b>10,200 rows</b>, cumulative CO2 = 234,031 kg).',
+        st['body']
+    ))
+
+    t65a_rows = [
+        ['1. Infrastructure & Services (:3000, :5000, :8000)', '3', '3 PASS / 0 FAIL', 'Frontend HTTP 200; Backend ONLINE; ML healthy'],
+        ['2. Database Integrity & Dataset Specs', '4', '2 PASS / 2 FAIL*', '*10,200 rows vs hardcoded 10,000 check after synthetic test imports'],
+        ['3. Auth, bcryptjs, JWT & RBAC (ADMIN/OFFICER/ANALYST)', '4', '4 PASS / 0 FAIL', 'All 3 roles authenticated; Analyst blocked (403) on /api/users'],
+        ['4. Dashboard Aggregations & Dynamic Filters', '7', '5 PASS / 2 FAIL*', '*Totals reflect 10,200 rows (234,031 kg CO2) vs 10,000 baseline assert'],
+        ['5. Dataset Explorer, Dictionary & Sorting', '3', '2 PASS / 1 FAIL*', '*Pagination count increased due to +200 synthetic test rows'],
+        ['6. Analytics (13x13 Matrix, Scatter, Clean Quartiles)', '4', '4 PASS / 0 FAIL', 'Top driver verified r = 0.71; quartiles Q1\u2013Q4 computed'],
+        ['7. Mode B Activities & Factor Recalculation', '4', '4 PASS / 0 FAIL', 'Create (4100 kg CO2), Update (4920 kg), and Delete verified'],
+        ['8. ML Inference & Prediction History Persistence', '3', '3 PASS / 0 FAIL', 'Active Linear Regression inferred 25.244 kg CO2; DB logged'],
+        ['9\u201311. Recommendations, Statutory Exports & Audit Logs', '8', '8 PASS / 0 FAIL', 'PDFKit (5,373 B), ExcelJS (321,703 B), CSV, 21 audit logs'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.5: Live Execution Summary of 40-Assertion Deployment Audit (comprehensiveDeploymentAudit.js)',
+                     ['Verification Domain', 'Checks', 'Observed Outcome', 'Verified Diagnostic Notes'],
+                     t65a_rows, [148, 38, 86, 215], 'tbl65')
+
+    story.append(Paragraph('6.6 Statutory Export Audits &amp; Scenario Sensitivity Verification', st['h2']))
+    story.append(Paragraph(
+        'Both statutory report exporters passed binary validation: PDFKit streamed a valid <b>5,373-byte PDF</b> (`%PDF` header) incorporating Mode B activity tables '
+        'and standardization disclosures, while ExcelJS produced a valid <b>321,703-byte `.xlsx` workbook</b> containing three formatted worksheets backed by the '
+        '10 seeded emission factors summarized in Table 6.6. Table 6.7 illustrates live FastAPI inference behavior across operational test scenarios.',
+        st['body']
+    ))
+
+    t66a_rows = [
+        ['Grid Electricity (CEA India v19)', 'ENERGY', '0.820 kg CO2 / kWh', 'Central Electricity Authority v19 (CO2e x1.00)'],
+        ['Diesel (HSD) / Petrol (Gasoline)', 'FUEL', '2.680 / 2.310 kg / L', 'IPCC 2019 Refinement Tier 1 (CO2e x1.01)'],
+        ['Compressed Natural Gas (CNG)', 'FUEL', '2.750 kg CO2 / kg', 'MoPNG India / IPCC Stoichiometric (x1.02)'],
+        ['Passenger Car / EV / Heavy Truck', 'TRANSPORTATION', '0.171 / 0.053 / 0.297', 'BEE India, CEA Grid EV, GHG Protocol Freight'],
+        ['Municipal Solid Waste / Potable Water', 'WASTE / WATER', '0.580 kg/kg / 0.350 kg/kL', 'IPCC FOD Model / CPHEEO & BEE India'],
+        ['Liquid Nitrogen (Cryogenic Auxiliary)', 'MATERIAL', '0.450 kg CO2 / kg', 'Industrial Gas Association LCA (ASU Power)'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.6: Verified Seeded Emission Factors Supporting Mode B Calculations and Statutory Exports',
+                     ['Fuel / Activity Standard', 'Category', 'Verified Factor', 'Authoritative Source'],
+                     t66a_rows, [145, 78, 95, 169], 'tbl66')
+
+    t67a_rows = [
+        ['Nominal Zero-Mean Baseline (All Z = 0.0)', 'Energy = 0.0, Transport = 0.0, Fuel = 0.0', '22.955 kg CO2', 'Matches dataset mean (22.956 kg)'],
+        ['Peak Propulsion Test Load (+1.5\u03c3 / +1.0\u03c3)', 'Energy = +1.5, Transport = +1.0, Fuel = +1.0', '38.973 kg CO2', '+69.8% above zero-mean baseline'],
+        ['Green Mitigation Dispatch (-1.2\u03c3 / +1.5\u03c3 Clean)', 'Energy = -1.2, Transport = -0.8, Renew = +1.5', '10.169 kg CO2', '-55.7% footprint reduction vs. baseline'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.7: Operational Sensitivity Scenarios Evaluated via Active Linear Regression Model',
+                     ['Operational Scenario Profile', 'Standardized Input Overrides', 'Predicted CO2', 'Relative Operational Shift'],
+                     t67a_rows, [145, 145, 78, 119], 'tbl67')
+
+    story.append(Paragraph('6.7 Production Compilation &amp; Live PostgreSQL State Verification', st['h2']))
+    story.append(Paragraph(
+        'Table 6.8 consolidates verified build artifacts from Vite 5.4.21 alongside live row counts queried directly from the operational PostgreSQL database '
+        'and FastAPI service endpoint following synthetic CSV ingestion and operational seeding.',
+        st['body']
+    ))
+
+    t68a_rows = [
+        ['Vite Production Build (npm run build)', '1,671 modules transformed in 3.48 s', 'JS: 598.51 kB | CSS: 31.89 kB | HTML: 1.12 kB'],
+        ['PostgreSQL dataset_records Table', '10,200 total rows (10,000 + 200 test CSV)', '16 ImportLog batches logged (0 failed rows)'],
+        ['PostgreSQL Operational & Factor Ledgers', '7 ActivityRecords | 10 EmissionFactors', '5 seeded Departments | 4 Recommendations'],
+        ['Security & Prediction Audit Tables', '3 RBAC Users | 7 PredictionHistory entries', '21 audited mutation events in AuditLog'],
+        ['FastAPI /health & Express /api/health', 'Port 8000 healthy | Port 5000 ONLINE', 'Best ML Model: Linear Regression (12 features)'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.8: Observed Production Bundle Output and Live Three-Tier State Snapshot',
+                     ['Subsystem / Table Verified', 'Observed Cardinality / Metric', 'Verified Artifact / Audit Context'],
+                     t68a_rows, [145, 155, 187], 'tbl68')
+
+    story.append(Paragraph('6.8 Synthetic Schema Ingestion &amp; Mitigation Recommendation Verification', st['h2']))
+    story.append(Paragraph(
+        'To verify end-to-end schema enforcement under realistic user uploads beyond initial seeding, synthetic validation set '
+        '<i>Carbon_Footprint_Synthetic_Test_Dataset_100.csv</i> (100 validated records matching all 14 Mode A headers) was submitted through '
+        '<i>POST /api/dataset/import</i> alongside multipart upload boundaries in <i>DataImport.jsx</i>. Client-side PapaParse header previewing confirmed '
+        'schema alignment prior to server streaming, and PostgreSQL persisted all 100/100 rows cleanly with zero coercion failures across repeated test batches '
+        '(raising <i>dataset_records</i> from 10,000 to 10,200 across 16 audited <i>ImportLog</i> runs). Concurrently, malformed non-matching schemas triggered HTTP 400 '
+        'rejection without mutating persisted rows.',
+        st['body']
+    ))
+    t69_rows = [
+        ['Synthetic Batch CSV Import (100 rows)', 'POST /api/dataset/import -> HTTP 200', '100/100 records committed; ImportLog status COMPLETED'],
+        ['Schema Rejection Guardrail (Negative Test)', 'Missing Date / Target -> HTTP 400', 'Upload aborted before transaction; zero corrupt rows'],
+        ['Mitigation Recommendations Workflow', '4 active recommendations persisted', 'Priority triage & status transitions logged in AuditLog'],
+        ['Statutory Report Preview & Fallback Download', 'PDFKit & ExcelJS Blob + token query', 'Tested with header Bearer auth & query string fallback'],
+    ]
+    add_styled_table(story, st,
+                     'Table 6.9: Verified Schema Ingestion, Negative Guardrail, and Governance Audit Results',
+                     ['Operational Workflow Tested', 'Verified API / DB Contract', 'Observed Verification Outcome'],
+                     t69_rows, [160, 145, 182], 'tbl69')
+
+    story.append(Paragraph('6.9 Mode B Ledger Recalculation &amp; RBAC Security Verification', st['h2']))
+    story.append(Paragraph(
+        'Runtime CRUD tests in <i>comprehensiveDeploymentAudit.js</i> directly verified Mode B relational integrity and cryptographic role isolation. Creating a '
+        'test substation electricity entry of 5,000 kWh linked to CEA India v19 (0.82 kg CO2/kWh) automatically persisted <i>calculatedCo2 = 4,100.0 kg CO2</i>; '
+        'subsequently issuing a <i>PUT /api/activities/:id</i> mutation revising quantity to 6,000 kWh deterministically updated the stored result to '
+        '<i>4,920.0 kg CO2</i> before clean <i>DELETE</i> teardown verified ledger rollback.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Across authorization probes, authenticating with seeded <i>ANALYST</i> and <i>OFFICER</i> JWT credentials cleanly granted read analytics while returning '
+        'strict HTTP <b>403 Forbidden</b> responses on restricted endpoints (<i>GET /api/users</i> and mutating admin routes), proving server-side '
+        '<i>requireRole(...)</i> enforcement independent of client-side navigation visibility. Together, these verified behaviors demonstrate full readiness across '
+        'security, transactional accounting, machine learning inference, and compliance reporting.',
+        st['body']
+    ))
+
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 7: DISCUSSION (Body Pages 24–25)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch7'))
+    story.append(Paragraph('CHAPTER 7: DISCUSSION', st['chapter']))
+
+    story.append(Paragraph('7.1 Why Linear Regression Outperformed Non-Linear Ensembles', st['h2']))
+    story.append(Paragraph(
+        'An instructive empirical outcome of Chapter 6 is that Ordinary Least Squares <b>Linear Regression</b> (Test R<super>2</super> = 0.8534, '
+        'RMSE = 3.7652 kg CO2) outperformed all three non-linear decision-tree architectures\u2014Gradient Boosting (R<super>2</super> = 0.8474), Random Forest '
+        '(R<super>2</super> = 0.8428), and Decision Tree (R<super>2</super> = 0.8243)\u2014on both random and chronological validation splits. Examining Chapter 3\'s '
+        'correlation matrix clarifies this behavior: physical target carbon emissions respond almost linearly and additively to standardized energy demand '
+        '(r = +0.7048) and transportation distance (r = +0.5897), while the remaining ~15% variance behaves as stationary random noise.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'In additive linear regimes, orthogonal axis-aligned cuts within decision trees and boosted ensembles approximate smooth diagonal hyperplanes using '
+        'staircase step functions, introducing quantization variance at leaf boundaries without discovering genuine non-linear interactions. Retaining automatic '
+        'best-model promotion inside <i>train_models.py</i> provides the best of both worlds: parsimonious linear inference today while allowing Gradient Boosting or '
+        'Random Forest to overtake <i>active_model.joblib</i> automatically whenever future site telemetry introduces threshold regimes. Additionally, notice that '
+        'chrono-holdout R<super>2</super> drops by less than 0.0083 across Linear Regression (0.8534 to 0.8451), confirming high temporal stationarity and absence '
+        'of structural overfitting.',
+        st['body']
+    ))
+
+    story.append(Paragraph('7.2 Practical Value of Dual-Mode Segregation &amp; Operational Clarity', st['h2']))
+    story.append(Paragraph(
+        'Structurally isolating <i>dataset_records</i> (Mode A) from <i>activity_records</i> (Mode B) proved decisive during batch CSV ingestion testing. When synthetic '
+        '100-row batches were uploaded via <i>DataImport.jsx</i>, PostgreSQL safely scaled Mode A storage from 10,000 to 10,200 rows under audited <i>ImportLog</i> '
+        'records without perturbing a single Mode B physical calculation, CEA v19 emission factor, or officer activity audit trail. Likewise, displaying raw Pearson '
+        'correlations alongside renewable quartile groupings (Table 3.2) prevented misinterpretation of zero-correlation synthetic quartiles (22.83\u201323.08 kg CO2). '
+        'Separating operational activities by GHG Protocol Scope (Scope 1/2/3) ensures engineering divisions (PTF, CEP, EMD, FIU, SQA) receive transparent division-level '
+        'accountability.',
+        st['body']
+    ))
+
+    story.append(Paragraph('7.3 Service Resilience, Graceful Fallback &amp; Security Trade-Offs', st['h2']))
+    story.append(Paragraph(
+        'Inspection of <i>predictionController.js</i> and <i>ml-service/app.py</i> demonstrates thoughtful resilience: if the FastAPI ML container on port 8000 is '
+        'temporarily unreachable, <i>GET /api/predictions/models</i> gracefully falls back to PostgreSQL <i>ModelMetadata</i> records so the dashboard continues '
+        'rendering comparative metrics rather than crashing. Similarly, FastAPI initializes models lazily or via async <i>lifespan</i> handlers without blocking startup.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Security-wise, salted 10-round <i>bcryptjs</i> password verification, HS256 JWT tokens, and Prisma parameterized queries protect user accounts and prevent '
+        'SQL injection. Supporting optional <i>?token=</i> query strings on statutory report endpoints enables seamless browser PDF/Excel fallback triggers in '
+        '<i>Reports.jsx</i> alongside Authorization-header Blob fetches; in public cloud deployments behind HTTPS, restricting downloads strictly to short-lived '
+        'one-time tokens eliminates proxy URL log exposure.',
+        st['body']
+    ))
+
+    story.append(Paragraph('7.4 Containerized Deployment Architecture (Docker Compose &amp; Nginx)', st['h2']))
+    story.append(Paragraph(
+        'Beyond local development execution, <i>docker-compose.yml</i> and <i>frontend/nginx.conf</i> define a reproducible four-container production topology: '
+        '(1) <b>iprc_postgres</b> (<i>postgres:15-alpine</i>) exposing port 5432 with persistent named volume <i>pgdata</i> and five-second <i>pg_isready</i> health '
+        'probes; (2) <b>iprc_ml_service</b> (port 8000) monitored via HTTP <i>/health</i> checks every ten seconds; (3) <b>iprc_backend</b> (port 5000) waiting on '
+        'healthy database and ML dependencies before executing idempotent startup initialization (<i>npx prisma db push</i>, <i>seed.js</i>, <i>importDataset.js</i>, '
+        'and <i>seedOperationalActivities.js</i>); and (4) <b>iprc_frontend</b> serving static assets via Nginx on mapped host port 3000.',
+        st['body']
+    ))
+    story.append(Paragraph(
+        'Inside <i>frontend/nginx.conf</i>, production delivery enables gzip compression for bundles exceeding 10,240 bytes, enforces six-month immutable caching '
+        '(<i>max-age=15552000</i>) across hashed Vite JavaScript and CSS chunks, serves HTML5 BrowserRouter routes cleanly via <i>try_files $uri $uri/ /index.html</i>, '
+        'and reverse-proxies unified <i>/api/</i> traffic internally to <i>http://backend:5000/api/</i>.',
+        st['body']
+    ))
+
+    story.append(Paragraph('7.5 Identified System Boundaries and Limitations', st['h2']))
+    story.append(Paragraph(
+        'Four verifiable system boundaries remain documented for future releases: (1) <b>Pre-Standardized Upload Schema:</b> Mode A CSV import expects files conforming '
+        'to the 14-column normalized schema rather than applying an online <i>StandardScaler</i> fit to raw physical inputs; (2) <b>CSV-Bound Retraining:</b> '
+        '<i>POST /train</i> reloads <i>Preprocessed_Carbon_Footprint_Dataset.csv</i> rather than querying appended PostgreSQL rows dynamically; (3) <b>Test Suite Count '
+        'Coupling:</b> <i>comprehensiveDeploymentAudit.js</i> enforces exact 10,000-row equality rather than \u226510,000, flagging imported test batches as assertion failures '
+        'despite successful ingestion; and (4) <b>Linear Contribution Approximation:</b> <i>POST /predict</i> computes global importance-weighted proxies rather than exact SHAP.',
+        st['body']
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # CHAPTER 8: CONCLUSION AND FUTURE SCOPE (Body Pages 26–27)
+    # =========================================================================
+    story.append(Marker('chapters', 'ch8'))
+    story.append(Paragraph('CHAPTER 8: CONCLUSION AND FUTURE SCOPE', st['chapter']))
+
+    story.append(Paragraph('8.1 Summary of Verified Project Contributions', st['h2']))
+    story.append(Paragraph(
+        'This Minor Project successfully engineered, integrated, and empirically validated <b>IPRC CarbonTrack</b> (Research Reference: <b>RES-IPRC-2025-003</b>), '
+        'delivering a modular, submission-ready environmental monitoring and machine learning prediction system aligned with NIT Raipur engineering standards:',
+        st['body']
+    ))
+    for c in [
+        '<b>Production-Compiled Full-Stack Architecture:</b> Implemented a 15-view React 18.3 / Vite 5.4 / Chart.js SPA (compiling 1,671 modules cleanly in 3.48 s), a 10-route Express 4.21 API, a 13-model PostgreSQL database via Prisma ORM 5.22, and an asynchronous Python FastAPI ML engine.',
+        '<b>Dual-Mode GHG Accounting Integrity:</b> Enforced strict separation between Mode A statistical baselines (10,000 historical/projected observations spanning 2024\u20132051 with zero missing/duplicate cells, expanded to 10,200 rows during verified batch import testing) and Mode B physical activity tracking calibrated against 10 verified emission factors from CEA India v19, IPCC 2019, BEE, CPHEEO, and IGA LCA.',
+        '<b>Reproducible Leakage-Free ML Benchmarking:</b> Evaluated Linear Regression, Decision Tree, Random Forest, and Gradient Boosting across random and chronological 80/20 partitions, confirming Ordinary Least Squares Linear Regression as the optimal production estimator (Test R<super>2</super> = 0.8534, MAE = 2.9609 kg CO2, RMSE = 3.7652 kg CO2, Chrono R<super>2</super> = 0.8451) driven by energy demand (r = +0.705) and transport distance (r = +0.590).',
+        '<b>Governance, Security &amp; Statutory Reporting:</b> Verified bcryptjs/JWT RBAC segregation across ADMIN, OFFICER, and ANALYST accounts (403 enforcement verified on /api/users), immutable AuditLog persistence, and valid PDFKit (5,373 B) and 3-sheet ExcelJS (321,703 B) exports.'
+    ]:
+        story.append(Paragraph('\u2022 ' + c, st['bullet']))
+
+    story.append(Paragraph('8.2 Deliverables Traceability Matrix &amp; Future Engineering Roadmap', st['h2']))
+    story.append(Paragraph(
+        'Table 8.1 maps each stated objective from Chapter 1 directly to its verified source artifacts and observed metrics, while Table 8.2 outlines five phased '
+        'extensions designed to evolve IPRC CarbonTrack toward an autonomous multi-facility telemetry platform.',
+        st['body']
+    ))
+
+    t81a_rows = [
+        ['Obj. 1: Three-Tier Platform', 'App.jsx, index.js, app.py, schema.prisma', '15 React views (1,671 Vite modules), 10 API routes, 13 DB models'],
+        ['Obj. 2: Zero-Leakage ML', 'train_models.py, models_metadata.json', '4 models benchmarked; Linear Regression active (R\u00b2 = 0.8534)'],
+        ['Obj. 3: Mode B Factor Engine', 'activityController.js, seed.js', '10 verified CEA v19 / IPCC / BEE / CPHEEO factors; CRUD auto-calc'],
+        ['Obj. 4: Batch CSV Ingestion', 'DataImport.jsx, datasetController.js', '100/100 test CSV rows HTTP 200 OK; 10,200 live rows; 0 failures'],
+        ['Obj. 5: RBAC & Exports', 'auth.js, reportController.js', '3 roles, 403 RBAC enforced, PDFKit (5,373 B) & ExcelJS (321,703 B)'],
+    ]
+    add_styled_table(story, st,
+                     'Table 8.1: Objective-to-Implementation & Empirical Verification Traceability Matrix',
+                     ['Project Objective', 'Primary Code Artifacts', 'Verified Implementation Evidence'],
+                     t81a_rows, [112, 152, 223], 'tbl81')
+
+    t82_rows = [
+        ['Phase 1: Dynamic Pipeline Sync', 'FastAPI + Prisma Integration', 'Retrain models directly on cumulative PostgreSQL dataset_records with persisted StandardScaler'],
+        ['Phase 2: IoT Telemetry Ingestion', 'MQTT / OPC-UA Connectors', 'Automate substation kWh, DG fuel flow, and cryogenic LN2 sensor feeds into Mode B ActivityRecord'],
+        ['Phase 3: Exact Explainable AI', 'TreeSHAP & LinearSHAP', 'Compute instance-level marginal SHAP attributions per inference request inside POST /predict'],
+        ['Phase 4: Scope 3 & TimescaleDB', 'Database Partitioning', 'Enable TimescaleDB chronological hypertables and external supplier portals for Scope 3 procurement'],
+        ['Phase 5: CI/CD Test Hardening', 'Ephemeral Test Harness', 'Run integration & Playwright UI suites against isolated seeded test containers before deployment'],
+    ]
+    add_styled_table(story, st,
+                     'Table 8.2: Phased Engineering Roadmap for Future Evolution of IPRC CarbonTrack',
+                     ['Enhancement Phase', 'Target System Layer', 'Concrete Technical Deliverable'],
+                     t82_rows, [120, 122, 245], 'tbl82')
+
+    story.append(Paragraph(
+        'In conclusion, IPRC CarbonTrack demonstrates that disciplined database modeling, explicit standardization disclosures, rigorous baseline validation, and '
+        'open-source web technologies can unite organizational GHG Protocol compliance and real-time predictive analytics into a single cohesive platform.',
+        st['body']
+    ))
+    story.append(PageBreak())
+
+    # =========================================================================
+    # REFERENCES (Body Page 28)
+    # =========================================================================
+    story.append(Marker('chapters', 'refs'))
+    story.append(Paragraph('REFERENCES', st['chapter']))
+    story.append(Spacer(1, 2))
+    refs = [
+        '[1] World Resources Institute and World Business Council for Sustainable Development, "The Greenhouse Gas Protocol: A Corporate Accounting and Reporting Standard," Revised Edition, Washington, DC, USA, 2004.',
+        '[2] International Organization for Standardization, "ISO 14064-1:2018 \u2014 Greenhouse gases \u2014 Part 1: Specification with guidance at the organization level for quantification and reporting of greenhouse gas emissions and removals," Geneva, Switzerland, 2018.',
+        '[3] Central Electricity Authority (CEA), Ministry of Power, Government of India, "CO2 Baseline Database for the Indian Power Sector (User Guide & Baseline Dataset Version 19.0)," New Delhi, India, 2023.',
+        '[4] Intergovernmental Panel on Climate Change (IPCC), "2019 Refinement to the 2006 IPCC Guidelines for National Greenhouse Gas Inventories," Calvo Buendia, E. et al. (Eds.), IPCC, Switzerland, 2019.',
+        '[5] Bureau of Energy Efficiency (BEE), Ministry of Power, Government of India, "Energy Conservation & Emission Benchmarking Guidelines for Transport and Commercial Buildings," New Delhi, India, 2023.',
+        '[6] T. Hastie, R. Tibshirani, and J. Friedman, "The Elements of Statistical Learning: Data Mining, Inference, and Prediction," 2nd ed., Springer Series in Statistics, New York, NY, USA, 2009.',
+        '[7] L. Breiman, "Random Forests," Machine Learning, vol. 45, no. 1, pp. 5\u201332, Oct. 2001.',
+        '[8] J. H. Friedman, "Greedy function approximation: A gradient boosting machine," Annals of Statistics, vol. 29, no. 5, pp. 1189\u20131232, Oct. 2001.',
+        '[9] Z. Wang and R. S. Srinivasan, "A review of artificial intelligence based building energy use prediction: Contrasting the capabilities of single and ensemble prediction models," Renewable and Sustainable Energy Reviews, vol. 75, pp. 796\u2013808, Aug. 2017.',
+        '[10] K. Amasyali and N. M. El-Gohary, "A review of data-driven building energy consumption prediction studies," Renewable and Sustainable Energy Reviews, vol. 81, pp. 1192\u20131205, Jan. 2018.',
+        '[11] S. Kaufman, S. Rosset, C. Perlich, and O. Stitelman, "Leakage in data mining: Formulation, detection, and avoidance," ACM Transactions on Knowledge Discovery from Data (TKDD), vol. 6, no. 4, pp. 1\u201321, Dec. 2012.',
+        '[12] F. Pedregosa et al., "Scikit-learn: Machine Learning in Python," Journal of Machine Learning Research, vol. 12, pp. 2825\u20132830, Nov. 2011.',
+        '[13] S. Ramirez, "FastAPI: High-performance modern web framework for building APIs with Python 3.8+," ASGI Open-Source Specification, 2024.',
+        '[14] Meta Platforms, Inc., "React 18 User Interface Library," and Evan You, "Vite Next-Generation Frontend Build Tooling," 2024.',
+        '[15] OpenJS Foundation, "Express 4.x Web Framework for Node.js," and Prisma Data, Inc., "Prisma ORM Schema & Client Reference," 2024.',
+        '[16] M. Jones, J. Bradley, and N. Sakimura, "JSON Web Token (JWT)," Internet Engineering Task Force (IETF), RFC 7519, May 2015.',
+        '[17] PostgreSQL Global Development Group, "PostgreSQL Relational Database Management System Documentation," 2024.',
+        '[18] Central Public Health and Environmental Engineering Organisation (CPHEEO), Ministry of Housing and Urban Affairs, India, "Manual on Water Supply and Treatment," New Delhi, India.',
+    ]
+    for r in refs:
+        story.append(Paragraph(r, st['ref']))
+
+    return story
+
+def main():
+    with open(META_PATH, 'r') as f:
+        meta = json.load(f)
+    st = make_styles()
+
+    tracker = {'chapters': {}, 'figures': {}, 'tables': {}}
+    tmp_path = PDF_PATH + '.pass1.tmp'
+    doc1 = TrackingDocTemplate(tmp_path, tracker, pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54)
+    story1 = build_story(st, meta, tracker)
+    doc1.build(story1, canvasmaker=NumberedCanvas)
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
+    print('Pass 1 recorded pages:', tracker)
+
+    doc2 = TrackingDocTemplate(PDF_PATH, {'chapters': {}, 'figures': {}, 'tables': {}},
+                               pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54, bottomMargin=54,
+                               title='IPRC CarbonTrack - Minor Project End-Semester Report',
+                               author='D. V. V. Anjaneya Kumar, Yash Mittal')
+    story2 = build_story(st, meta, tracker)
+    doc2.build(story2, canvasmaker=NumberedCanvas)
+    print('Final PDF written to:', PDF_PATH)
 
 if __name__ == '__main__':
-    build_pdf()
+    main()

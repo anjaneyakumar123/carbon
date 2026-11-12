@@ -1,300 +1,478 @@
 import os
+import json
+import joblib
 import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import matplotlib.patches as mpatches
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+from sklearn.model_selection import train_test_split
 
-OUTPUT_DIR = r'c:\Users\anjan\OneDrive\Documents\Desktop\Carbon\reports\figures'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-plt.rcParams['font.sans-serif'] = 'DejaVu Sans'
-plt.rcParams['font.family'] = 'sans-serif'
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+FIG_DIR = os.path.join(os.path.dirname(__file__), 'figures')
+DATA_PATH = os.path.join(BASE_DIR, 'data', 'Preprocessed_Carbon_Footprint_Dataset.csv')
+META_PATH = os.path.join(BASE_DIR, 'ml-service', 'models', 'models_metadata.json')
+MODEL_PATH = os.path.join(BASE_DIR, 'ml-service', 'models', 'linear_regression.joblib')
 
-# ----------------- Fig 1: Schematic of IPRC Facility Infrastructure & Operational Zones -----------------
-fig, ax = plt.subplots(figsize=(7, 3.2), dpi=200)
-ax.set_xlim(0, 10)
-ax.set_ylim(0, 5)
-ax.axis('off')
+os.makedirs(FIG_DIR, exist_ok=True)
 
-# Draw Campus Perimeter
-campus = patches.FancyBboxPatch((0.5, 0.5), 9, 4, boxstyle="round,pad=0.2", ec="#1e3d59", fc="#f5f7fa", lw=2)
-ax.add_patch(campus)
-ax.text(5, 4.3, "ISRO Propulsion Complex (IPRC) - Facility Footprint Boundary", ha='center', fontsize=10.5, fontweight='bold', color='#1e3d59')
+# Clean academic typography matching NIT Raipur report style
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
+plt.rcParams['axes.edgecolor'] = '#334155'
+plt.rcParams['axes.linewidth'] = 0.8
 
-# Sub-facilities
-zones = [
-    ("Cryogenic Test Stand", 1, 2.2, 2.2, 1.5, "#e8f4f8", "#17b978"),
-    ("Semi-Cryo Stage Stand", 3.8, 2.2, 2.4, 1.5, "#e8f4f8", "#ff6e40"),
-    ("Substation & Solar PV", 6.8, 2.2, 2.4, 1.5, "#f1f0ec", "#ffb300"),
-    ("Chemical Effluent Plant", 1.8, 0.8, 2.8, 1.1, "#f7f7f7", "#845ec2"),
-    ("Campus Logistics Yard", 5.4, 0.8, 3.8, 1.1, "#f7f7f7", "#4b4453")
-]
+NAVY = '#002147'
+BLUE = '#0b3b60'
+TEAL = '#065f46'
+EMERALD = '#10b981'
+SLATE = '#475569'
+LIGHT_BG = '#f8fafc'
+AMBER = '#b45309'
+ROSE = '#be123c'
 
-for name, x, y, w, h, bg, border in zones:
-    box = patches.FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.1", ec=border, fc=bg, lw=1.5)
+def draw_box(ax, x, y, w, h, title, body='', fc='#f1f5f9', ec=NAVY, title_color=NAVY, lw=1.2, fs_title=9, fs_body=7.5):
+    box = FancyBboxPatch((x, y), w, h, boxstyle='round,pad=0.02,rounding_size=0.02',
+                         facecolor=fc, edgecolor=ec, linewidth=lw)
     ax.add_patch(box)
-    ax.text(x + w/2, y + h/2, name, ha='center', va='center', fontsize=8, fontweight='bold', color='#2d3436')
+    if body:
+        ax.text(x + w/2, y + h*0.68, title, ha='center', va='center', fontsize=fs_title, fontweight='bold', color=title_color)
+        ax.text(x + w/2, y + h*0.32, body, ha='center', va='center', fontsize=fs_body, color='#1e293b', linespacing=1.35)
+    else:
+        ax.text(x + w/2, y + h/2, title, ha='center', va='center', fontsize=fs_title, fontweight='bold', color=title_color)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig1_facility.png'), dpi=200)
-plt.close()
+def draw_arrow(ax, x1, y1, x2, y2, label='', color='#334155', rad=0.0):
+    arr = FancyArrowPatch((x1, y1), (x2, y2), arrowstyle='-|>,head_length=6,head_width=3.5',
+                          color=color, linewidth=1.3, connectionstyle=f'arc3,rad={rad}')
+    ax.add_patch(arr)
+    if label:
+        mx, my = (x1 + x2)/2, (y1 + y2)/2
+        ax.text(mx, my, label, ha='center', va='center', fontsize=6.8, color=color,
+                bbox=dict(boxstyle='round,pad=0.14', fc='white', ec='#e2e8f0', alpha=0.95))
 
-# ----------------- Fig 2: Raw vs Preprocessed Signals -----------------
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 3.2), dpi=200, sharex=True)
-t = np.linspace(0, 10, 500)
-raw = np.sin(1.5 * t) + 0.4 * np.random.randn(len(t)) + 2.5
-preprocessed = (raw - np.mean(raw)) / np.std(raw)
+def fig1_dual_mode(df):
+    fig, ax = plt.subplots(figsize=(8.2, 4.0), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('IPRC CarbonTrack — Dual-Mode GHG Accounting & Predictive Analytics Framework',
+                 fontsize=10.5, fontweight='bold', color=NAVY, pad=10)
 
-ax1.plot(t, raw, color='#d63031', lw=1.2, label='Raw Telemetry (kW / Fuel Liters)')
-ax1.set_ylabel('Raw Amp', fontsize=8)
-ax1.grid(True, linestyle='--', alpha=0.5)
-ax1.legend(loc='upper right', fontsize=7.5)
-ax1.set_title('A. Raw Multi-Channel Sensor Telemetry (Baseline Drift & Industrial High-Freq Noise)', fontsize=8.5, fontweight='bold')
+    # Top Data Sources
+    draw_box(ax, 0.04, 0.72, 0.40, 0.20, 'MODE A: Standardized Research Baseline',
+             '10,000 CSV Observations (2024–2051)\n12 Z-Score Features + Physical Target (kg CO2)\nZero Missing Values | Batch Append Ready',
+             fc='#eff6ff', ec=BLUE, title_color=BLUE)
+    draw_box(ax, 0.56, 0.72, 0.40, 0.20, 'MODE B: Physical Facility Operations',
+             'Live Propellant, Energy, Fuel & Fleet Logs\nPhysical Units (kWh, Litres, km, kg, kL)\nGHG Protocol Scope 1 / 2 / 3 Attribution',
+             fc='#ecfdf5', ec=TEAL, title_color=TEAL)
 
-ax2.plot(t, preprocessed, color='#0984e3', lw=1.2, label='Standardized (Z-Score Normalization, Zero-Mean)')
-ax2.set_xlabel('Time Horizon (Days / Hours)', fontsize=8)
-ax2.set_ylabel('Std Score', fontsize=8)
-ax2.grid(True, linestyle='--', alpha=0.5)
-ax2.legend(loc='upper right', fontsize=7.5)
-ax2.set_title('B. Preprocessed Dataset Feature (Outlier Capping, Bandpass Filtered, Z-Score)', fontsize=8.5, fontweight='bold')
+    # Middle Processing Engines
+    draw_box(ax, 0.04, 0.37, 0.40, 0.22, 'Predictive ML & Correlation Engine',
+             'FastAPI Microservice (Port 8000)\nLinear Regression (R²=0.853), GBR, RF, DT\n13x13 Pearson Matrix & Feature Weights',
+             fc='#f8fafc', ec=SLATE, title_color=NAVY)
+    draw_box(ax, 0.56, 0.37, 0.40, 0.22, 'Deterministic Emission Calculator',
+             'Express REST Engine + Prisma ORM (Port 5000)\nCEA India v19 (0.82 kg/kWh) & IPCC 2019\nEmissions = Quantity × Verified Factor',
+             fc='#f8fafc', ec=SLATE, title_color=NAVY)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig2_signals.png'), dpi=200)
-plt.close()
+    # Bottom Unified Governance Layer
+    draw_box(ax, 0.14, 0.05, 0.72, 0.20, 'Unified Governance, Audit & Reporting Portal (React 18 + PostgreSQL)',
+             '15 Role-Gated Modules | Mitigation Protocol Tracking | Immutable Audit Logs | PDFKit & ExcelJS Statutory Exports',
+             fc='#f1f5f9', ec=NAVY, title_color=NAVY, fs_title=9.2)
 
-# ----------------- Fig 3: Energy & Power Density Decomposition -----------------
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 2.8), dpi=200)
-categories = ['Electricity', 'Stationary Diesel', 'Fleet Transport', 'Solid Waste', 'Propellant Neutr.']
-shares = [48, 26, 12, 8, 6]
-colors = ['#00b894', '#d63031', '#0984e3', '#fdcb6e', '#6c5ce7']
+    draw_arrow(ax, 0.24, 0.72, 0.24, 0.59, '80/20 & Chrono Splits', color=BLUE)
+    draw_arrow(ax, 0.76, 0.72, 0.76, 0.59, 'Factor Lookup & Validation', color=TEAL)
+    draw_arrow(ax, 0.24, 0.37, 0.36, 0.25, 'Forecasts & R² Metrics', color=NAVY)
+    draw_arrow(ax, 0.76, 0.37, 0.64, 0.25, 'Scoped CO2e Ledger', color=NAVY)
 
-ax1.pie(shares, labels=categories, colors=colors, autopct='%1.1f%%', startangle=140, textprops={'fontsize': 7})
-ax1.set_title('A. Facility Operational Emission Shares', fontsize=8.5, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig1_facility.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-freq = np.linspace(0, 60, 200)
-psd = np.exp(-(freq - 25)**2 / 40) + 0.1 * np.exp(-(freq - 45)**2 / 20)
-ax2.plot(freq, psd, color='#d63031', lw=1.5, label='High-Intensity Test Peak')
-ax2.fill_between(freq, 0, psd, color='#ff7675', alpha=0.3)
-ax2.set_xlabel('Operational Cycle Frequency (Hz)', fontsize=8)
-ax2.set_ylabel('Power Spectral Density (dB/Hz)', fontsize=8)
-ax2.grid(True, linestyle='--', alpha=0.4)
-ax2.legend(fontsize=7.5)
-ax2.set_title('B. Power Density Across Activity Horizons', fontsize=8.5, fontweight='bold')
+def fig2_architecture():
+    fig, ax = plt.subplots(figsize=(8.4, 4.4), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('Decoupled Three-Tier Enterprise Microservice Architecture',
+                 fontsize=10.5, fontweight='bold', color=NAVY, pad=10)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig3_psd.png'), dpi=200)
-plt.close()
+    # Tier 1 Frontend
+    draw_box(ax, 0.05, 0.72, 0.90, 0.21, 'PRESENTATION TIER — React 18.3 + Vite 5.4 SPA (Port 3000)',
+             '15 Interactive Views (Overview, Dataset Explorer, Activity Monitoring, 6 Domain Analytics, ML Insights, Reports, Data Import, Admin)\nChart.js 4.4 Visualizations  •  Tailwind CSS Enterprise Theme  •  Axios JWT Interceptors  •  Client CSV Preview (PapaParse)',
+             fc='#eff6ff', ec=BLUE, title_color=BLUE, fs_title=9.2, fs_body=7.4)
 
-# ----------------- Fig 4: Correlation Matrix & Binarized Graph -----------------
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 2.9), dpi=200)
-corr = np.array([
-    [1.0, 0.65, -0.42, 0.72],
-    [0.65, 1.0, -0.28, 0.58],
-    [-0.42, -0.28, 1.0, -0.61],
-    [0.72, 0.58, -0.61, 1.0]
-])
-im = ax1.imshow(corr, cmap='coolwarm', vmin=-1, vmax=1)
-ax1.set_xticks(range(4))
-ax1.set_yticks(range(4))
-labels = ['Energy', 'Fuel', 'Renewable', 'Emission']
-ax1.set_xticklabels(labels, fontsize=7, rotation=30)
-ax1.set_yticklabels(labels, fontsize=7)
-for i in range(4):
-    for j in range(4):
-        ax1.text(j, i, f"{corr[i,j]:.2f}", ha="center", va="center", color="black" if abs(corr[i,j])<0.6 else "white", fontsize=7.5)
-ax1.set_title('A. Multivariate Feature Correlation Matrix', fontsize=8.5, fontweight='bold')
+    # Tier 2 Backend
+    draw_box(ax, 0.05, 0.38, 0.90, 0.22, 'APPLICATION TIER — Node.js + Express.js 4.21 REST API (Port 5000)',
+             '10 Mounted Route Modules (/auth, /dashboard, /dataset, /analytics, /activities, /emission-factors, /predictions, /recommendations, /reports, /users)\nJWT RBAC Middleware (ADMIN / OFFICER / ANALYST)  •  Multer 50 MB CSV Ingestion  •  PDFKit & 3-Sheet ExcelJS Report Engine',
+             fc='#ecfdf5', ec=TEAL, title_color=TEAL, fs_title=9.2, fs_body=7.4)
 
-# Circle Graph
-theta = np.linspace(0, 2*np.pi, 16, endpoint=False)
-x = np.cos(theta)
-y = np.sin(theta)
-ax2.scatter(x[:6], y[:6], color='#d63031', s=80, label='Key Emission Drivers (Hubs)')
-ax2.scatter(x[6:], y[6:], color='#0984e3', s=60, label='Auxiliary Sensors')
-for i in range(16):
-    for j in range(i+1, 16):
-        if (i < 6 and j < 6) or (i % 3 == 0 and j % 3 == 0):
-            ax2.plot([x[i], x[j]], [y[i], y[j]], color='#b2bec3', lw=0.6, alpha=0.7)
-ax2.axis('off')
-ax2.legend(loc='lower center', bbox_to_anchor=(0.5, -0.15), fontsize=7, ncol=2)
-ax2.set_title('B. Binarized Dependency Network Graph', fontsize=8.5, fontweight='bold')
+    # Tier 3 Data + ML
+    draw_box(ax, 0.05, 0.04, 0.43, 0.22, 'DATA TIER — PostgreSQL via Prisma ORM 5.22',
+             '13 Normalized Relational Models\nDatasetRecord (10,200 rows)  •  ActivityRecord  •  EmissionFactor\nAuditLog  •  ImportLog  •  PredictionHistory',
+             fc='#f8fafc', ec=NAVY, title_color=NAVY, fs_title=8.6, fs_body=7.3)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig4_network.png'), dpi=200)
-plt.close()
+    draw_box(ax, 0.52, 0.04, 0.43, 0.22, 'INTELLIGENCE TIER — Python FastAPI ML Engine (Port 8000)',
+             'Uvicorn ASGI + Async Lifespan Loader\n4 Trained Scikit-Learn Regressors (.joblib)\nGET /models  •  POST /predict  •  POST /train',
+             fc='#fefce8', ec=AMBER, title_color=AMBER, fs_title=8.6, fs_body=7.3)
 
-# ----------------- Fig 5: ENCS Distribution -----------------
-fig, ax = plt.subplots(figsize=(6.5, 2.7), dpi=200)
-np.random.seed(42)
-non_soz = np.random.normal(12.8, 5.3, 200)
-soz = np.random.normal(26.4, 8.1, 100)
-box = ax.boxplot([non_soz, soz], patch_artist=True, tick_labels=['Low-Emission Operations (n=2,341)', 'Peak Propellant Test Regimes (n=187)'])
-box['boxes'][0].set_facecolor('#74b9ff')
-box['boxes'][1].set_facecolor('#ff7675')
-ax.set_ylabel('Activity Connectivity / Emission Density', fontsize=8)
-ax.set_title('Distribution of Activity Connectivity Strength Across Baseline vs Peak Test Regimes', fontsize=8.5, fontweight='bold')
-ax.text(1.5, 38, 'Mann-Whitney U: p = 1.18e-08 (***)', ha='center', fontsize=8, color='#d63031', fontweight='bold')
-ax.grid(True, linestyle='--', alpha=0.5)
+    draw_arrow(ax, 0.50, 0.72, 0.50, 0.60, 'HTTP/JSON + Bearer JWT Token (Axios)', color=NAVY)
+    draw_arrow(ax, 0.27, 0.38, 0.27, 0.26, 'Prisma Client Parameterized SQL', color=TEAL)
+    draw_arrow(ax, 0.73, 0.38, 0.73, 0.26, 'Axios REST Calls (:8000)', color=AMBER)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig5_distribution.png'), dpi=200)
-plt.close()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig2_architecture.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-# ----------------- Fig 6: TDA Pipeline -----------------
-fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(7.2, 2.6), dpi=200)
-t = np.linspace(0, 20, 400)
-x_p = np.sin(t)
-y_p = np.cos(t)
-ax1.plot(x_p, y_p, color='#0984e3', lw=1)
-ax1.set_title('A. State Phase Space\n(tau=28, m=4)', fontsize=7.5, fontweight='bold')
-ax1.set_xticks([])
-ax1.set_yticks([])
+def fig3_erd():
+    fig, ax = plt.subplots(figsize=(8.6, 4.8), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('Normalized PostgreSQL Entity-Relationship Schema (Prisma Models)',
+                 fontsize=10.5, fontweight='bold', color=NAVY, pad=10)
 
-birth = np.random.uniform(0.01, 0.15, 25)
-death = birth + np.random.uniform(0.02, 0.08, 25)
-ax2.scatter(birth, death, color='#d63031', s=20, marker='^', label='H1 (Periodic Loops)')
-ax2.scatter(birth[:10], birth[:10] + np.random.uniform(0.005, 0.02, 10), color='#0984e3', s=20, marker='o', label='H0 (Connected)')
-ax2.plot([0, 0.2], [0, 0.2], 'k--', lw=0.8, alpha=0.6)
-ax2.set_xlabel('Birth Scale', fontsize=7)
-ax2.set_ylabel('Death Scale', fontsize=7)
-ax2.set_title('B. Persistence Diagram', fontsize=7.5, fontweight='bold')
-ax2.legend(fontsize=6.5)
+    draw_box(ax, 0.03, 0.66, 0.26, 0.26, 'Department', 'id (UUID PK)\nname, code (PTF/CEP/EMD/FIU/SQA)\ndescription', fc='#eff6ff', ec=BLUE, fs_body=7)
+    draw_box(ax, 0.03, 0.33, 0.26, 0.25, 'User & AuditLog', 'id (UUID PK), email, passwordHash\nrole (ADMIN|OFFICER|ANALYST)\nAuditLog: userId FK, action, entity', fc='#f8fafc', ec=NAVY, fs_body=7)
+    draw_box(ax, 0.37, 0.62, 0.28, 0.30, 'ActivityRecord (Mode B)', 'id (UUID PK), date, category, scope\nquantity, unit, departmentId FK\nemissionFactorId FK\ncalculatedEmissionKgCO2, status', fc='#ecfdf5', ec=TEAL, title_color=TEAL, fs_body=7)
+    draw_box(ax, 0.37, 0.29, 0.28, 0.25, 'EmissionFactor & Result', 'EmissionFactor: fuelOrActivityType,\nfactor, unit, source, co2eMultiplier\nEmissionResult: emissionKgCO2e', fc='#ecfdf5', ec=TEAL, title_color=TEAL, fs_body=7)
+    draw_box(ax, 0.71, 0.64, 0.26, 0.28, 'DatasetRecord (Mode A)', 'id, datasetId FK, date\n12 Z-score Input Columns\ncarbonEmissionKgCO2 (Float)\nIndexed: date, datasetId', fc='#fefce8', ec=AMBER, title_color=AMBER, fs_body=7)
+    draw_box(ax, 0.71, 0.30, 0.26, 0.25, 'UploadedDataset & ImportLog', 'UploadedDataset: filename, status\nImportLog: filename, totalRows,\nsuccessfulRows, failedRows', fc='#fefce8', ec=AMBER, title_color=AMBER, fs_body=7)
+    draw_box(ax, 0.14, 0.03, 0.72, 0.19, 'Analytical, Sustainability & Governance Support Models',
+             'RenewableEnergyRecord  •  WaterRecord  •  WasteRecord  •  MaterialRecord\nRecommendation (Priority/Status)  •  PredictionHistory (inputFeatures JSON)  •  ModelMetadata (R², MAE, RMSE)',
+             fc='#f1f5f9', ec=SLATE, fs_body=7)
 
-for i, (b, d) in enumerate(zip(birth[:15], death[:15])):
-    ax3.hlines(i, b, d, colors='#0984e3' if i < 5 else '#d63031', lw=1.8)
-ax3.set_xlabel('Filtration Radius', fontsize=7)
-ax3.set_ylabel('Feature Index', fontsize=7)
-ax3.set_title('C. Persistence Barcodes', fontsize=7.5, fontweight='bold')
+    draw_arrow(ax, 0.16, 0.66, 0.16, 0.58, '1 : N')
+    draw_arrow(ax, 0.29, 0.78, 0.37, 0.78, '1 : N')
+    draw_arrow(ax, 0.51, 0.54, 0.51, 0.62, '1 : N')
+    draw_arrow(ax, 0.84, 0.55, 0.84, 0.64, '1 : N')
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig6_tda.png'), dpi=200)
-plt.close()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig3_erd.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-# ----------------- Fig 7: End-to-End Pipeline Architecture -----------------
-fig, ax = plt.subplots(figsize=(7.2, 2.4), dpi=200)
-ax.axis('off')
-boxes = [
-    ("Raw Multi-Source\nData Ingestion", 0.10),
-    ("Preprocessing &\nStandardization", 0.30),
-    ("Multi-Branch Feature\nEngine (Mode A & B)", 0.50),
-    ("Machine Learning\nPrediction Engine", 0.70),
-    ("Audit Reporting\n& Verification", 0.90)
-]
-for i in range(len(boxes)-1):
-    name, x = boxes[i]
-    ax.annotate('', xy=(boxes[i+1][1]-0.08, 0.5), xytext=(x+0.08, 0.5),
-                arrowprops=dict(arrowstyle="->", color="#2d3436", lw=1.5))
-for name, x in boxes:
-    box = patches.FancyBboxPatch((x-0.08, 0.25), 0.16, 0.5, boxstyle="round,pad=0.04", ec="#0984e3", fc="#ebf5fb", lw=1.5)
-    ax.add_patch(box)
-    ax.text(x, 0.5, name, ha='center', va='center', fontsize=6.5, fontweight='bold', color='#1e3799')
+def fig4_auth_flow():
+    fig, ax = plt.subplots(figsize=(8.4, 4.2), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('JWT Authentication, RBAC Authorization & Protected Request Sequence',
+                 fontsize=10.5, fontweight='bold', color=NAVY, pad=10)
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig7_architecture.png'), dpi=200)
-plt.close()
+    actors = [('Client SPA\n(:3000)', 0.12), ('Express RBAC\n(:5000)', 0.38), ('PostgreSQL\n(Prisma)', 0.64), ('FastAPI ML\n(:8000)', 0.88)]
+    for name, x in actors:
+        draw_box(ax, x-0.09, 0.82, 0.18, 0.12, name, fc='#eff6ff', ec=NAVY, fs_title=8.2)
+        ax.plot([x, x], [0.06, 0.82], '--', color='#94a3b8', lw=1.0)
 
-# ----------------- Fig 8: Training Loss Trajectory -----------------
-fig, ax = plt.subplots(figsize=(6.5, 2.7), dpi=200)
-epochs = np.arange(1, 81)
-train_loss = 0.7 * np.exp(-epochs/12) + 0.05 + 0.01 * np.random.randn(80)*0.2
-val_loss = 0.72 * np.exp(-epochs/13) + 0.055 + 0.015 * np.random.randn(80)*0.2
-ax.plot(epochs, train_loss, color='#0984e3', lw=1.5, label='Training Loss (Weighted Huber Loss)')
-ax.plot(epochs, val_loss, color='#d63031', lw=1.5, linestyle='--', label='5-Fold Validation Loss')
-ax.annotate('Rapid Convergence\n(Epoch 20)', xy=(20, 0.18), xytext=(35, 0.35),
-            arrowprops=dict(arrowstyle="->", color="black", lw=1), fontsize=8, fontweight='bold')
-ax.set_xlabel('Training Epochs', fontsize=8)
-ax.set_ylabel('Loss (MSE)', fontsize=8)
-ax.grid(True, linestyle='--', alpha=0.5)
-ax.legend(fontsize=7.5)
-ax.set_title('Supervised Model Training Loss Trajectory (80 Epochs)', fontsize=8.5, fontweight='bold')
+    steps = [
+        (0.75, 0.12, 0.38, '1. POST /api/auth/login (email, password)', BLUE),
+        (0.66, 0.38, 0.64, '2. Lookup User + bcryptjs.compare(hash) & AuditLog', TEAL),
+        (0.57, 0.38, 0.12, '3. 200 OK + Signed HS256 JWT (7d expiry)', BLUE),
+        (0.46, 0.12, 0.38, '4. Protected Request (Authorization: Bearer <JWT>)', NAVY),
+        (0.37, 0.38, 0.64, '5. verifyToken() + requireRole(ADMIN|OFFICER)', ROSE),
+        (0.26, 0.38, 0.88, '6. Authorized Forward (/predict or /train)', AMBER),
+        (0.15, 0.88, 0.12, '7. Inference Result + Persisted PredictionHistory', TEAL),
+    ]
+    for y, x1, x2, lbl, col in steps:
+        arr = FancyArrowPatch((x1, y), (x2, y), arrowstyle='-|>,head_length=5,head_width=3', color=col, lw=1.3)
+        ax.add_patch(arr)
+        ax.text((x1+x2)/2, y+0.018, lbl, ha='center', va='bottom', fontsize=7.3, fontweight='bold', color=col,
+                bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.9))
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig8_loss.png'), dpi=200)
-plt.close()
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig4_auth_flow.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-# ----------------- Fig 9: Multi-Model Evaluation & Residuals -----------------
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.2, 2.8), dpi=200)
-y_true = np.linspace(2, 55, 100)
-y_pred = y_true + np.random.normal(0, 0.05, 100)
-ax1.scatter(y_true, y_pred, color='#0984e3', s=15, alpha=0.7, label='Test Predictions (R²=0.999)')
-ax1.plot([0, 60], [0, 60], 'r--', lw=1.2, label='Perfect Fit Reference')
-ax1.set_xlabel('Actual Carbon Emission (kgCO2)', fontsize=7.5)
-ax1.set_ylabel('Predicted Emission (kgCO2)', fontsize=7.5)
-ax1.grid(True, linestyle='--', alpha=0.4)
-ax1.legend(fontsize=7)
-ax1.set_title('A. Actual vs. Predicted Emission Concordance', fontsize=8, fontweight='bold')
+def fig5_distribution(df):
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.6), dpi=300)
+    vals = df['Carbon_Emission_kgCO2'].values
 
-res = np.random.normal(0, 0.003, 1000)
-ax2.hist(res, bins=30, color='#00b894', edgecolor='black', alpha=0.8)
-ax2.set_xlabel('Residual Error (kgCO2)', fontsize=7.5)
-ax2.set_ylabel('Frequency', fontsize=7.5)
-ax2.grid(True, linestyle='--', alpha=0.4)
-ax2.set_title('B. Gaussian Residual Error Distribution', fontsize=8, fontweight='bold')
+    # Panel A: Histogram + mean/median
+    ax = axes[0]
+    ax.hist(vals, bins=32, color=TEAL, alpha=0.82, edgecolor='white', linewidth=0.5)
+    ax.axvline(vals.mean(), color=ROSE, linestyle='--', lw=1.5, label=f'Mean = {vals.mean():.2f} kg')
+    ax.axvline(np.median(vals), color=AMBER, linestyle=':', lw=1.6, label=f'Median = {np.median(vals):.2f} kg')
+    ax.set_title('A. Target Distribution (n = 10,000)', fontsize=9.5, fontweight='bold', color=NAVY)
+    ax.set_xlabel('Carbon_Emission_kgCO2 (kg CO2)', fontsize=8.5)
+    ax.set_ylabel('Observation Frequency', fontsize=8.5)
+    ax.legend(fontsize=7.5, frameon=True)
+    ax.grid(alpha=0.25, linestyle='--')
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig9_roc.png'), dpi=200)
-plt.close()
+    # Panel B: Boxplot by Building Type (Residential > 0 vs Commercial <= 0)
+    ax2 = axes[1]
+    res = df[df['Building_Type_Residential'] > 0]['Carbon_Emission_kgCO2'].values
+    com = df[df['Building_Type_Residential'] <= 0]['Carbon_Emission_kgCO2'].values
+    bp = ax2.boxplot([com, res], tick_labels=['Commercial / Industrial\n(Z <= 0)', 'Residential\n(Z > 0)'],
+                     patch_artist=True, widths=0.45)
+    bp['boxes'][0].set_facecolor('#bfdbfe')
+    bp['boxes'][1].set_facecolor('#bbf7d0')
+    for med in bp['medians']:
+        med.set_color(NAVY); med.set_linewidth(1.6)
+    ax2.set_title('B. Stratified Spread by Building Sector', fontsize=9.5, fontweight='bold', color=NAVY)
+    ax2.set_ylabel('Carbon_Emission_kgCO2 (kg CO2)', fontsize=8.5)
+    ax2.grid(axis='y', alpha=0.25, linestyle='--')
 
-# ----------------- Fig 10: Master Model Ablation Study -----------------
-fig, ax = plt.subplots(figsize=(6.8, 2.7), dpi=200)
-models = ['Linear Regr.', 'Ridge Regr.', 'Gradient Boost', 'Random Forest', 'Support Vector']
-r2_scores = [99.99, 99.99, 99.84, 99.68, 99.21]
-rmse_scores = [0.003, 0.003, 0.387, 0.548, 0.862]
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig5_distribution.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-x = np.arange(len(models))
-width = 0.35
-ax.bar(x - width/2, r2_scores, width, label='Test R² Score (%)', color='#0984e3')
-ax.set_ylabel('Accuracy Metric (%)', fontsize=8)
-ax.set_ylim(95, 100.5)
-ax.set_xticks(x)
-ax.set_xticklabels(models, fontsize=7.5)
-ax.grid(True, linestyle='--', alpha=0.4)
-ax.legend(loc='lower left', fontsize=7.5)
-ax.set_title('Master Model Ablation Study: Overall Performance Benchmark', fontsize=8.5, fontweight='bold')
+def fig6_correlation(df):
+    cols = [
+        'Energy_Usage_kWh', 'Transportation_Distance_km', 'Smart_Appliance_Usage_hours',
+        'Renewable_Energy_Usage_percent', 'Temperature_C', 'Humidity_percent',
+        'Fuel_Usage_Liters', 'Waste_Generated_kg', 'Vehicle_Type_Car',
+        'Vehicle_Type_Electric Vehicle', 'Vehicle_Type_Walking',
+        'Building_Type_Residential', 'Carbon_Emission_kgCO2'
+    ]
+    short = [
+        'Energy', 'Transport', 'SmartAppl', 'Renew%', 'Temp', 'Humid',
+        'Fuel', 'Waste', 'Car', 'EV', 'Walk', 'Resid', 'CO2_Target'
+    ]
+    corr = df[cols].corr().values
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig10_ablation.png'), dpi=200)
-plt.close()
+    fig, axes = plt.subplots(1, 2, figsize=(8.8, 4.0), dpi=300, gridspec_kw={'width_ratios': [1.35, 1]})
+    ax = axes[0]
+    im = ax.imshow(corr, cmap='RdBu_r', vmin=-1.0, vmax=1.0)
+    ax.set_xticks(range(len(short))); ax.set_xticklabels(short, rotation=45, ha='right', fontsize=6.8)
+    ax.set_yticks(range(len(short))); ax.set_yticklabels(short, fontsize=6.8)
+    ax.set_title('A. 13×13 Pearson Correlation Matrix', fontsize=9.2, fontweight='bold', color=NAVY)
+    # Annotate strong entries
+    for i in range(len(short)):
+        for j in range(len(short)):
+            if abs(corr[i, j]) >= 0.35 or i == j:
+                txt_col = 'white' if abs(corr[i, j]) > 0.6 else '#0f172a'
+                ax.text(j, i, f'{corr[i, j]:.2f}', ha='center', va='center', fontsize=5.2, color=txt_col)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-# ----------------- Fig 11: Systematic Window Segmentation Comparison -----------------
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.2, 2.8), dpi=200)
-ax1.axvline(0, color='r', linestyle='--', lw=1.2, label='Test Stand Hot-Firing Onset')
-ax1.barh([0, 1, 2, 3], [30, 10, 5, 10], left=[-5, -5, -2.5, -5], height=0.5, color=['#74b9ff', '#55efc4', '#ffeaa7', '#ff7675'])
-ax1.set_yticks([0, 1, 2, 3])
-ax1.set_yticklabels(['Strategy A (30s)', 'Strategy B (10s)', 'Strategy C (5s)', 'Strategy D (Event-Aligned)'], fontsize=7)
-ax1.set_xlabel('Relative Window Time (s)', fontsize=7.5)
-ax1.set_title('A. Operational Window Alignment', fontsize=8, fontweight='bold')
-ax1.legend(fontsize=6.5)
+    # Panel B: Bar ranking with target
+    ax2 = axes[1]
+    target_corr = pd.Series(corr[:-1, -1], index=short[:-1]).sort_values()
+    bar_colors = [TEAL if v >= 0.1 else (SLATE if v >= 0 else ROSE) for v in target_corr.values]
+    ax2.barh(target_corr.index, target_corr.values, color=bar_colors, height=0.65)
+    ax2.axvline(0, color='#334155', lw=0.8)
+    for idx, v in enumerate(target_corr.values):
+        offset = 0.015 if v >= 0 else -0.015
+        ha = 'left' if v >= 0 else 'right'
+        ax2.text(v + offset, idx, f'{v:+.3f}', va='center', ha=ha, fontsize=6.8, color=NAVY)
+    ax2.set_xlim(-0.18, 0.88)
+    ax2.set_title('B. Feature Correlation with CO2 Target', fontsize=9.2, fontweight='bold', color=NAVY)
+    ax2.set_xlabel('Pearson Coefficient (r)', fontsize=8)
+    ax2.tick_params(axis='y', labelsize=7.2)
+    ax2.grid(axis='x', alpha=0.25, linestyle='--')
 
-strats = ['Strat A', 'Strat B', 'Strat C', 'Strat D']
-perf = [77.43, 64.78, 57.34, 98.66]
-ax2.bar(strats, perf, color=['#74b9ff', '#e17055', '#fdcb6e', '#0984e3'])
-ax2.set_ylabel('Model Concordance (%)', fontsize=7.5)
-ax2.set_ylim(50, 105)
-ax2.grid(True, linestyle='--', alpha=0.4)
-ax2.text(3, 99.5, '98.7% ± 0.9%', ha='center', fontsize=7.5, fontweight='bold', color='#0984e3')
-ax2.set_title('B. Empirical Ingestion Fidelity', fontsize=8, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig6_correlation.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig11_window.png'), dpi=200)
-plt.close()
+def fig7_scatter_drivers(df):
+    sample = df.sample(n=1200, random_state=42)
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.6), dpi=300)
 
-# ----------------- Fig 12: Substation Localization Case Study -----------------
-fig, ax = plt.subplots(figsize=(6.8, 2.7), dpi=200)
-shafts = ['Substation LA\n(Cryo Chillers)', 'Substation LB\n(Vacuum Pumps)', 'Substation LC\n(Propellant Load)', 'Substation LDD\n(Admin Complex)', 'Substation LDE\n(Water Treatment)']
-baseline_kw = [17.5, 12.0, 10.0, 16.0, 14.0]
-peak_kw = [3.8, 4.1, 3.2, 0.4, 0.8]
+    for ax, col, color, title in [
+        (axes[0], 'Energy_Usage_kWh', BLUE, 'A. Energy Usage (Z-score) vs. CO2 Target'),
+        (axes[1], 'Transportation_Distance_km', TEAL, 'B. Transport Distance (Z-score) vs. CO2 Target')
+    ]:
+        x = sample[col].values
+        y = sample['Carbon_Emission_kgCO2'].values
+        ax.scatter(x, y, s=8, alpha=0.38, color=color, edgecolors='none')
+        m, b = np.polyfit(df[col].values, df['Carbon_Emission_kgCO2'].values, 1)
+        xs = np.linspace(x.min(), x.max(), 100)
+        r = df[col].corr(df['Carbon_Emission_kgCO2'])
+        ax.plot(xs, m*xs + b, color=ROSE, lw=1.8, label=f'OLS Fit (r = +{r:.3f})')
+        ax.set_title(title, fontsize=9.2, fontweight='bold', color=NAVY)
+        ax.set_xlabel(f'{col} (Standardized)', fontsize=8.2)
+        ax.set_ylabel('Carbon_Emission_kgCO2 (kg)', fontsize=8.2)
+        ax.legend(fontsize=7.5, loc='upper left')
+        ax.grid(alpha=0.25, linestyle='--')
 
-x = np.arange(len(shafts))
-width = 0.35
-ax.bar(x - width/2, baseline_kw, width, label='Total Monitored Feeders', color='#dfe6e9', edgecolor='#b2bec3')
-ax.bar(x + width/2, peak_kw, width, label='Peak Emission Feeders (Detected Focus)', color='#d63031')
-ax.set_ylabel('Substation Feeder Channels', fontsize=8)
-ax.set_xticks(x)
-ax.set_xticklabels(shafts, fontsize=7)
-ax.grid(True, linestyle='--', alpha=0.4)
-ax.legend(fontsize=7.5)
-ax.set_title('Substation Infrastructure Electrical Load & High-Emission Localization (IPRC Test Complex)', fontsize=8, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig7_scatter_drivers.png'), dpi=300, bbox_inches='tight')
+    plt.close()
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, 'fig12_shaft.png'), dpi=200)
-plt.close()
+def fig8_modeb_workflow():
+    fig, ax = plt.subplots(figsize=(8.4, 3.8), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('Mode B Activity-Based GHG Quantification Pipeline & Factor Registry',
+                 fontsize=10.5, fontweight='bold', color=NAVY, pad=10)
 
-print('All 12 figures generated successfully in reports/figures/')
+    draw_box(ax, 0.03, 0.56, 0.21, 0.32, '1. Operational Input',
+             'Activity Category (6)\nPhysical Quantity & Unit\nDepartment (PTF/CEP/...)\nGHG Scope (1 / 2 / 3)',
+             fc='#eff6ff', ec=BLUE, fs_body=7.2)
+    draw_box(ax, 0.29, 0.56, 0.22, 0.32, '2. Factor Resolution',
+             'EmissionFactor Table\nCEA India v19: 0.82/kWh\nIPCC Diesel: 2.68/L\nIPCC Petrol: 2.31/L',
+             fc='#ecfdf5', ec=TEAL, title_color=TEAL, fs_body=7.2)
+    draw_box(ax, 0.56, 0.56, 0.20, 0.32, '3. Deterministic Engine',
+             'CO2 = Qty × Factor\nCO2e = CO2 × Multiplier\nStatus = COMPLETED\nAuditLog Persisted',
+             fc='#fefce8', ec=AMBER, title_color=AMBER, fs_body=7.2)
+    draw_box(ax, 0.81, 0.56, 0.16, 0.32, '4. Scope Ledger',
+             'Scope 1 (Direct)\nScope 2 (Grid)\nScope 3 (Value)\nPDF / XLSX Export',
+             fc='#f1f5f9', ec=NAVY, fs_body=7.2)
+
+    draw_arrow(ax, 0.24, 0.72, 0.29, 0.72)
+    draw_arrow(ax, 0.51, 0.72, 0.56, 0.72)
+    draw_arrow(ax, 0.76, 0.72, 0.81, 0.72)
+
+    # Bottom bar of verified emission factors
+    draw_box(ax, 0.03, 0.08, 0.94, 0.34, 'Seeded Authoritative Emission Factors (10 Verified Standards Across 6 Categories)',
+             'Grid Electricity: 0.820 kg/kWh (CEA v19)   |   Diesel (HSD): 2.680 kg/L (IPCC 2019)   |   Petrol: 2.310 kg/L (IPCC 2019)   |   CNG: 2.750 kg/kg (MoPNG)\n'
+             'Passenger Car: 0.171 kg/km (BEE India)   |   EV Fleet: 0.053 kg/km (CEA Grid)   |   Heavy Diesel Truck: 0.297 kg/t-km (GHG Protocol)\n'
+             'Municipal Waste: 0.580 kg/kg (IPCC FOD)   |   Potable Water: 0.350 kg/kL (CPHEEO/BEE)   |   Cryogenic Liquid N2: 0.450 kg/kg (IGA LCA)',
+             fc='#f8fafc', ec=SLATE, title_color=NAVY, fs_title=8.5, fs_body=7.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig8_modeb_workflow.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def fig9_ml_benchmark(meta):
+    models = meta['models']
+    names = [m['modelName'] for m in models]
+    r2_rand = [m['r2Score'] for m in models]
+    r2_chrono = [m['chronoR2Score'] for m in models]
+    mae = [m['mae'] for m in models]
+    rmse = [m['rmse'] for m in models]
+
+    x = np.arange(len(names))
+    w = 0.34
+
+    fig, axes = plt.subplots(1, 2, figsize=(8.6, 3.8), dpi=300)
+
+    ax = axes[0]
+    b1 = ax.bar(x - w/2, r2_rand, w, label='Random 80/20 R²', color=BLUE)
+    b2 = ax.bar(x + w/2, r2_chrono, w, label='Chronological R²', color=EMERALD)
+    ax.set_ylim(0.75, 0.90)
+    ax.set_xticks(x); ax.set_xticklabels(names, rotation=15, ha='right', fontsize=7.8)
+    ax.set_ylabel('Coefficient of Determination (R²)', fontsize=8.5)
+    ax.set_title('A. Goodness-of-Fit (R²) Benchmark', fontsize=9.4, fontweight='bold', color=NAVY)
+    ax.legend(fontsize=7.5)
+    ax.grid(axis='y', alpha=0.25, linestyle='--')
+    for bars in (b1, b2):
+        for bar in bars:
+            h = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, h + 0.0025, f'{h:.3f}', ha='center', va='bottom', fontsize=6.5)
+
+    ax2 = axes[1]
+    b3 = ax2.bar(x - w/2, mae, w, label='Test MAE (kg)', color=AMBER)
+    b4 = ax2.bar(x + w/2, rmse, w, label='Test RMSE (kg)', color=ROSE)
+    ax2.set_ylim(0, 4.9)
+    ax2.set_xticks(x); ax2.set_xticklabels(names, rotation=15, ha='right', fontsize=7.8)
+    ax2.set_ylabel('Prediction Error (kg CO2)', fontsize=8.5)
+    ax2.set_title('B. Error Magnitude Comparison (MAE / RMSE)', fontsize=9.4, fontweight='bold', color=NAVY)
+    ax2.legend(fontsize=7.5)
+    ax2.grid(axis='y', alpha=0.25, linestyle='--')
+    for bars in (b3, b4):
+        for bar in bars:
+            h = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2, h + 0.07, f'{h:.2f}', ha='center', va='bottom', fontsize=6.5)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig9_ml_benchmark.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def fig10_residuals(df, meta):
+    feat_cols = meta['featureCols']
+    target_col = meta['targetCol']
+    X = df[feat_cols]
+    y = df[target_col]
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = joblib.load(MODEL_PATH)
+    preds = model.predict(X_test)
+    resids = y_test.values - preds
+
+    fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.6), dpi=300)
+
+    ax = axes[0]
+    ax.scatter(y_test.values, preds, s=9, alpha=0.35, color=BLUE, edgecolors='none')
+    lims = [min(y_test.min(), preds.min()), max(y_test.max(), preds.max())]
+    ax.plot(lims, lims, '--', color=ROSE, lw=1.6, label='Ideal y = ŷ Identity')
+    ax.set_title('A. Actual vs. Predicted (Active Linear Regression)', fontsize=9.2, fontweight='bold', color=NAVY)
+    ax.set_xlabel('Observed Physical Emission (kg CO2)', fontsize=8.2)
+    ax.set_ylabel('Predicted Emission (kg CO2)', fontsize=8.2)
+    ax.legend(fontsize=7.5)
+    ax.grid(alpha=0.25, linestyle='--')
+
+    ax2 = axes[1]
+    ax2.hist(resids, bins=30, color=TEAL, alpha=0.82, edgecolor='white', linewidth=0.5)
+    ax2.axvline(0, color=ROSE, linestyle='--', lw=1.5, label=f'Mean Residual = {resids.mean():.3f}')
+    ax2.set_title(f'B. Test Residual Error Distribution (RMSE = {np.sqrt(np.mean(resids**2)):.3f})',
+                  fontsize=9.2, fontweight='bold', color=NAVY)
+    ax2.set_xlabel('Residual Error (y - ŷ) in kg CO2', fontsize=8.2)
+    ax2.set_ylabel('Test Sample Count (n = 2,000)', fontsize=8.2)
+    ax2.legend(fontsize=7.5)
+    ax2.grid(alpha=0.25, linestyle='--')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig10_residuals.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def fig11_feature_importance(meta):
+    models = meta['models']
+    feats = [
+        'Energy_Usage_kWh', 'Transportation_Distance_km', 'Waste_Generated_kg',
+        'Fuel_Usage_Liters', 'Renewable_Energy_Usage_percent', 'Smart_Appliance_Usage_hours'
+    ]
+    labels = ['Energy Usage', 'Transport Dist.', 'Waste Gen.', 'Fuel Usage', 'Renewable %', 'Smart Appl.']
+    y_pos = np.arange(len(feats))
+    h = 0.19
+    palette = [BLUE, TEAL, AMBER, ROSE]
+
+    fig, ax = plt.subplots(figsize=(8.4, 3.8), dpi=300)
+    for idx, m in enumerate(models):
+        vals = [m['featureImportances'].get(f, 0.0) * 100 for f in feats]
+        ax.barh(y_pos + (idx - 1.5)*h, vals, h, label=m['modelName'], color=palette[idx])
+
+    ax.set_yticks(y_pos); ax.set_yticklabels(labels, fontsize=8.2)
+    ax.invert_yaxis()
+    ax.set_xlabel('Relative Feature Attribution Weight (%)', fontsize=8.5)
+    ax.set_title('Top-6 Standardized Feature Importance Comparison Across ML Models',
+                 fontsize=9.8, fontweight='bold', color=NAVY)
+    ax.legend(fontsize=7.8, loc='lower right')
+    ax.grid(axis='x', alpha=0.25, linestyle='--')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig11_feature_importance.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+def fig12_ingestion_pipeline():
+    fig, ax = plt.subplots(figsize=(8.4, 3.8), dpi=300)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
+    ax.set_title('Validated Batch CSV Ingestion & Statutory Report Synthesis Pipeline',
+                 fontsize=10.2, fontweight='bold', color=NAVY, pad=10)
+
+    draw_box(ax, 0.03, 0.54, 0.20, 0.34, 'Client CSV Preview',
+             'PapaParse (DataImport.jsx)\nChecks 14 Expected Cols\nHTTP Upload up to 50 MB',
+             fc='#eff6ff', ec=BLUE, fs_body=7.1)
+    draw_box(ax, 0.28, 0.54, 0.21, 0.34, 'Express Ingestion',
+             'Multer memoryStorage\nHeader Alias Normalizer\nNaN / Date Validation',
+             fc='#ecfdf5', ec=TEAL, title_color=TEAL, fs_body=7.1)
+    draw_box(ax, 0.54, 0.54, 0.21, 0.34, 'PostgreSQL Persistence',
+             'UploadedDataset Record\nChunked createMany (1,000)\nImportLog & AuditLog',
+             fc='#fefce8', ec=AMBER, title_color=AMBER, fs_body=7.1)
+    draw_box(ax, 0.80, 0.54, 0.17, 0.34, 'Statutory Exports',
+             'PDFKit (A4 Official)\nExcelJS (3 Worksheets)\nStreaming CSV Export',
+             fc='#f1f5f9', ec=NAVY, fs_body=7.1)
+
+    draw_arrow(ax, 0.23, 0.71, 0.28, 0.71)
+    draw_arrow(ax, 0.49, 0.71, 0.54, 0.71)
+    draw_arrow(ax, 0.75, 0.71, 0.80, 0.71)
+
+    draw_box(ax, 0.06, 0.08, 0.88, 0.32, 'Observed Pipeline Throughput & End-to-End Verification Metrics',
+             '• Baseline Seeding: 10,000 rows imported in 1 initial transaction (0 failed, 0 duplicates)\n'
+             '• Synthetic Validation Batch: 100/100 rows ingested via POST /api/dataset/import (HTTP 200 OK; total DB rows = 10,200)\n'
+             '• Statutory Exports Verified: PDFKit stream (5,373 bytes, valid %PDF header) | ExcelJS 3-sheet workbook (321,703 bytes, valid PK ZIP)',
+             fc='#f8fafc', ec=SLATE, title_color=NAVY, fs_title=8.6, fs_body=7.4)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIG_DIR, 'fig12_ingestion_pipeline.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+if __name__ == '__main__':
+    df = pd.read_csv(DATA_PATH)
+    with open(META_PATH, 'r') as f:
+        meta = json.load(f)
+
+    fig1_dual_mode(df)
+    fig2_architecture()
+    fig3_erd()
+    fig4_auth_flow()
+    fig5_distribution(df)
+    fig6_correlation(df)
+    fig7_scatter_drivers(df)
+    fig8_modeb_workflow()
+    fig9_ml_benchmark(meta)
+    fig10_residuals(df, meta)
+    fig11_feature_importance(meta)
+    fig12_ingestion_pipeline()
+    print('All 12 genuine CarbonTrack figures generated in:', FIG_DIR)
